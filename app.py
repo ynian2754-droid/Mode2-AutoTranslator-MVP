@@ -27,7 +27,7 @@ _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 def create_app(manager=None) -> FastAPI:
     """Give each app process its own browser write token, kept only in memory."""
-    application = FastAPI(title="Mode2 AutoTranslator MVP", version="0.2.1")
+    application = FastAPI(title="Mode2 AutoTranslator MVP", version="0.2.2")
     session_token = secrets.token_urlsafe(32)
     # Mode2 pages use relative, same-origin URLs. Cross-origin access is not
     # needed, including when the launcher selects a non-default port.
