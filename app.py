@@ -19,7 +19,7 @@ workspace = ProjectSession(
     settings_dir=BASE_DIR / ".runtime",
     legacy_runtime=BASE_DIR / ".runtime",
 )
-app = FastAPI(title="Mode2 AutoTranslator MVP", version="0.2.0")
+app = FastAPI(title="Mode2 AutoTranslator MVP", version="0.2.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:4873", "http://localhost:4873"],
