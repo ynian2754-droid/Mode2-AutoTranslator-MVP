@@ -95,7 +95,7 @@ async function qRequest(path, body, method, extraOptions={}) {
   } else if (path!=="/api/project"&&!path.includes("expected_project_id=")) {
     path += (path.includes("?") ? "&" : "?")+new URLSearchParams({expected_project_id:qp.runtimeId});
   }
-  const response=await fetch(path, options);
+  const response=await window.Mode2Request.fetch(path, options);
   const result=await response.json();
   if (!response.ok) {
     const error=new Error(typeof result.detail==="string"?result.detail:JSON.stringify(result.detail||result));

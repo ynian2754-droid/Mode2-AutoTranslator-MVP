@@ -43,7 +43,8 @@ class ProjectCatalog:
         self.book_root.mkdir(parents=True, exist_ok=True)
 
     def list_projects(self) -> list[dict[str, Any]]:
-        self.book_root.mkdir(parents=True, exist_ok=True)
+        if not self.book_root.is_dir():
+            return []
         projects: list[dict[str, Any]] = []
         for path in self.book_root.iterdir():
             if not path.is_dir() or path.is_symlink() or path.name.startswith("."):

@@ -12,7 +12,7 @@ function escapeHtml(value) {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await window.Mode2Request.fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });

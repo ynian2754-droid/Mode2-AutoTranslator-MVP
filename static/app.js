@@ -366,7 +366,7 @@ function flushDeferredProjectRender() {
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, {
+  const response = await window.Mode2Request.fetch(path, {
     headers,
     ...options,
   });
