@@ -8,6 +8,8 @@
 
 Mode2 turns long documents into traceable units: optionally analyze source concepts, check candidates against evidence, and prepare applicable meaning and terminology references before translating in parallel. A separately configured reviewer checks saved translations; you can edit, recheck, retry, or explicitly accept risk before export. It uses OpenAI-compatible APIs that **you configure**.
 
+**中文速览：** 本地导入与切分文档，可先做概念辨析，再并行翻译、独立校验、人工审阅并导出。[查看完整中文说明](#simplified-chinese)。
+
 **[Download the latest Windows ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [Quick start](#quick-start-windows) · [User guide (简体中文)](USER_GUIDE.md)
 
 ![A completed translation unit with source text, an editable saved translation, independent review status, and its reference snapshot](docs/images/03-unit-review.png)
@@ -110,16 +112,42 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 
 ## 简体中文
 
-Mode2 AutoTranslator 是在 Windows 本机运行、可逐单元审阅的文档翻译工作台。它将长文档切成可追踪单元；翻译前可先解析原文概念、独立检查候选及原文依据，为适用单元准备含义和术语参考。之后可并行翻译、单独校验，人工修改或明确接受风险，再导出完整文档。翻译、校验和概念准备调用由你配置的 OpenAI-compatible 接口；自动采用的概念参考不等于人工批准，也不保证每次请求都使用。
+**Mode2 AutoTranslator 是在 Windows 本机运行、可逐单元审阅的文档翻译工作台。** 它把文档切成可追踪单元；翻译前可以先辨析原文概念、核对候选和证据，为适用单元准备含义与术语参考。随后并行翻译、独立校验，留给人逐段修改、复检或明确接受风险，最后导出完整文档。模型服务由你通过 OpenAI-compatible API 配置。
 
 **[下载最新 Release ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [产品截图](#screenshots) · [使用与排错指南](USER_GUIDE.md)
 
+### 为什么用 Mode2
+
+普通文件翻译脚本往往只给出一份译文。Mode2 保留每个单元的原文位置、已保存译文、校验结果和人工决定。可选的概念准备会提出候选含义与译名，附上原文依据并进行独立检查；人工可以逐卡处理，也可以使用有条件的自动采用。工作台记录每个单元实际用过的参考快照。**自动采用不等于人工批准**，保存的参考也不保证每次都会注入。翻译与 reviewer 分步配置；两者可以使用同一家服务。
+
+### 截图导览
+
+这些是运行中程序的真实界面和实际导出的 PDF，使用合成原文、离线示例译文与校验结果，**不代表真实模型翻译质量**。
+
+- [单元审阅与人工编辑](docs/images/03-unit-review.png)：同一处查看原文、已保存译文、独立校验状态及参考快照。
+- [概念卡与原文证据](docs/images/04-concept-card.png)：查看 `green buffer` 的含义、候选译名、适用语境和采用状态。卡片中的中文是项目内容。
+- [导出的 PDF 页面](docs/images/05-exported-pdf.png)：展示完整文档的重排输出，并非源 PDF 版式复刻。
+- [项目列表](docs/images/01-project-library.png)、[工作台总览](docs/images/02-workspace-overview.png)、[概念准备状态](docs/images/06-concept-preparation.png) 展示其余环节。截图来源与限制见[图片说明](docs/images/README_SCREENSHOTS.md)。
+
 ### 快速开始
 
-1. 解压 Release ZIP；另行安装带 pip 的 Python 3.10+，然后在解压目录运行一次 `安装依赖.bat`。ZIP 不是免安装可执行程序，也不附带 Python 或模型服务。
-2. 运行 `启动.bat`，浏览器未自动打开时访问 `http://127.0.0.1:4873/`。
-3. 配置并测试翻译与校验接口，新建项目、导入文件并选择待处理单元。概念准备是可选步骤；预览计划不调用模型，确认执行后才会调用。
+1. 下载并解压 [最新 Release ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)。另行安装**带 pip 的 Python 3.10+**，在解压目录运行一次 `安装依赖.bat`。ZIP 不是免安装程序，也不附带 Python、API Key 或模型服务。
+2. 运行 `启动.bat`；浏览器未自动打开时访问 `http://127.0.0.1:4873/`。
+3. 配置并测试翻译和校验接口，新建项目、导入文件，选择单元开始处理。概念准备是可选步骤：预览计划不调用模型，确认准备后才会调用。
 
-支持导入 PDF、EPUB、Markdown、TXT，导出 Markdown、TXT、EPUB、PDF。扫描 PDF 需先 OCR，暂不支持 DOCX；PDF/EPUB 输出不能保证复刻原版式。项目与源文件保存在 `book/<项目名>/`，可能含密钥的接口设置保存在 `.runtime/api_settings.json`。调用你配置的服务时，相关原文、译文、上下文或概念参考可能发送给该服务；请遵守其数据与计费规则。
+流程是：**导入 → 切分 → 概念准备（可选）→ 并行翻译 → 独立校验 → 人工决定 → 导出**。详细操作见[用户手册](USER_GUIDE.md)。
 
-本项目自有源码和文档采用 [MIT License](LICENSE)。内置 PDF 字体保留上游许可，见[第三方组件说明](THIRD_PARTY_NOTICES.md)。最新 Release 尚未完成全新 Windows 安装和真实模型翻译验证。
+### 格式、数据与使用边界
+
+| | 格式 | 说明 |
+| --- | --- | --- |
+| 导入 | PDF、EPUB、Markdown、TXT | PDF 需要文本层；扫描件需先 OCR。 |
+| 导出 | Markdown、TXT、EPUB、PDF | 完整文档与追踪映射写入项目的 `output/` 目录。 |
+
+项目、原文件副本、译文、校验记录和导出文件保存在 `book/<项目名>/`；可能含 API Key 的设置保存在 `.runtime/api_settings.json`。这两个目录被 Git 忽略，也不随 v0.2.1 Release ZIP 分发。调用你配置的服务时，所选操作可能发送原文单元或摘录、相邻上下文、已保存译文、概念候选与适用参考；服务方的数据处理和计费规则由其决定。
+
+目前不支持 DOCX 导入或内置 OCR。PDF 导出会重新排版，EPUB 导出也不保证保留所有图片、复杂样式和交互元素。模型兼容性、译文质量、费用与限流取决于所配置的服务；[v0.2.1 Release](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/tag/v0.2.1) 尚无全新 Windows 安装和真实模型调用验证，概念准备目前只有离线验证。
+
+### 文档与许可
+
+[用户手册](USER_GUIDE.md)包含安装、接口设置、概念准备、翻译、校验、导出和排错。本项目自有源码与文档采用 [MIT License](LICENSE)；内置 PDF 字体保留上游许可，见[第三方组件说明](THIRD_PARTY_NOTICES.md)。
