@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pypdf>=5,<7
+python-multipart>=0.0.9,<1
+reportlab>=4,<5

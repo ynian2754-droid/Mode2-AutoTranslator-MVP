@@ -1,0 +1,30 @@
+# User projects and credentials
+book/
+.runtime/
+.env
+.env.*
+!.env.example
+
+# Local Python runtimes and generated files
+.venv/
+python-runtime/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+*.py[cod]
+*.log
+
+# AI workspaces and local planning artifacts
+.claude/
+.zcode/
+.codex/
+.cursor/
+.windsurf/
+AGENT.MD
+analysis/
+project\ plan/
+归档/
+
+# Standalone preview artifacts
+pelican-bike.html
+pelican-bike-preview.png

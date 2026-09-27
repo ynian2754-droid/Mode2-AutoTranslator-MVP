@@ -1,0 +1,49 @@
+{
+  "font_file": "DejaVuSans.ttf",
+  "font_family": "DejaVu Sans",
+  "font_postscript_name": "DejaVuSans",
+  "format": "static TrueType",
+  "sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+  "role": "Review-bounded math/symbol and Latin Extended-A fallback for the primary CJK font. Used only for codepoints the primary font cannot draw that fall inside the declared fallback_ranges; ordinary text always uses the primary font.",
+  "upstream": {
+    "project": "DejaVu Fonts",
+    "release": "2.37",
+    "tag_commit": "version_2_37",
+    "source_url": "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip",
+    "source_archive_sha256": "7576310b219e04159d35ff61dd4a4ec4cdba4f35c00e002a136f00e96a908b0a",
+    "source_file": "dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf",
+    "source_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+    "license": "Bitstream Vera Fonts Copyright; Arev Fonts Copyright (Tavmjong Bah); DejaVu changes are public domain",
+    "license_url": "https://github.com/dejavu-fonts/dejavu-fonts/blob/version_2_37/LICENSE",
+    "license_file": "LICENSE-DejaVuSans.txt",
+    "license_sha256": "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93",
+    "modifications": "none — the file is used unmodified, so the original family and PostScript name are kept (the license only requires renaming for modified copies)"
+  },
+  "fallback_ranges": [
+    "U+2070-U+209F Superscripts and Subscripts",
+    "U+27C0-U+27EF Miscellaneous Mathematical Symbols-A",
+    "U+0100-U+017F Latin Extended-A"
+  ],
+  "coverage": {
+    "unicode_cmap_entries": 5918,
+    "glyphs": 5918,
+    "tested_codepoints": [
+      "U+2080",
+      "U+2081",
+      "U+2082",
+      "U+2083",
+      "U+2089",
+      "U+27E8",
+      "U+27E9",
+      "U+27EA",
+      "U+27EB",
+      "U+0116",
+      "U+011F",
+      "U+0131",
+      "U+0142",
+      "U+015E",
+      "U+015F"
+    ],
+    "verification": "loaded with reportlab TTFont(..., validate=True) and re-read with fontTools getBestCmap before use; a missing required codepoint fails the gate instead of shipping."
+  }
+}

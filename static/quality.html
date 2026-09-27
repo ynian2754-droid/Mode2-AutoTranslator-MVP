@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>概念辨析 · Mode2 AutoTranslator</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260911-model-repair-loop-r1">
+  <link rel="stylesheet" href="/static/quality-page.css?v=20260924-batch-retry-parallel-r2">
+  <link rel="stylesheet" href="/static/shell.css?v=20260910-workbench-unify-r3">
+  <script src="/static/quality.js?v=20260920-omitted-count-r1" defer></script>
+  <script src="/static/quality-page.js?v=20260927-terminology-r1" defer></script>
+</head>
+<body class="quality-page">
+  <header class="topbar">
+    <a class="brand" href="/" title="返回项目选择"><span class="brand-mark">M2</span><span>Mode2<span class="brand-sub">AutoTranslator</span></span></a>
+    <nav class="app-nav" aria-label="工作区导航"><a id="editorLink" href="/editor">翻译工作台</a><a class="active" aria-current="page" href="/quality">概念辨析</a><a href="/settings">API 设置</a></nav>
+    <span class="connection-state" role="status"><span class="status-dot"></span><span id="connectionText">正在连接本地项目…</span></span>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">← 项目选择</a><span>/</span><strong id="projectName">正在加载…</strong></div>
+    <div class="page-heading"><div><h1>概念辨析</h1><p>准备有依据的概念参考，让后续翻译与校验有据可循。</p></div><div class="q-heading-actions"><button id="modeButton"><span id="referenceModeChip" class="mode-chip">正在核对模式</span><span aria-hidden="true">⌄</span></button><button id="refreshButton" class="small quiet">刷新数据</button></div></div>
+    <div id="pageError" class="page-error" role="alert" hidden></div>
+    <div id="pageLoading" class="empty">正在核对项目并加载概念数据…</div>
+    <div id="qualityWorkspace" hidden>
+      <nav class="view-nav" aria-label="概念辨析视图"><button id="scanTab" class="active" aria-current="page">准备参考</button><button id="reviewTab">概念管理 <span class="count" id="pendingCount">0</span></button><span class="view-note">自动采用与人工批准分别记录</span></nav>
+      <section id="scanView" aria-labelledby="scanTab">
+        <div class="q-scope-bar"><div><strong id="scopeSummary">正在核对范围…</strong><p id="scopeWords" class="tiny"></p></div><div class="q-scope-actions"><button id="openScope">调整范围</button><button id="openSettings">参数设置</button></div></div>
+        <div class="q-preparation-layout">
+          <section class="panel q-flow-panel"><header class="q-flow-heading"><div><h2 id="flowTitle">准备流程</h2><p>生成与检查分别计数，可并行进行。</p></div><span id="flowState" class="q-state"></span></header><div id="prepareConnection" class="q-progress-connection" role="status" aria-live="polite" data-status="ready"><span id="prepareConnectionLabel">正在连接任务状态…</span><button id="prepareStatusRefresh" class="text-button" type="button" disabled>刷新任务状态</button></div><div id="flowConnection" class="q-connection-note" role="status" hidden></div><p id="prepareTaskScope" class="q-progress-meta">当前尚无已确认的准备任务。</p><p id="prepareSyncMeta" class="q-progress-meta">最近同步 待确定 · 后端最近进展 待确定</p><div id="prepareFlow" class="q-flow"></div></section>
+          <aside class="panel q-result-panel" id="preparePanel" aria-label="本次计划与结果">
+            <h2>本次准备</h2><h3 id="prepareHeadline">准备开始</h3><p id="prepareIntro" class="tiny"></p>
+            <div id="preparePreview" class="prepare-preview" aria-live="polite"></div>
+            <div id="prepareOverview"></div><p id="prepareStatus" class="prepare-note" role="status"></p>
+            <div id="prepareManual" class="manual-scan" hidden><div id="planPreview" class="plan-preview" aria-live="polite"></div></div>
+            <div class="prepare-actions"><button id="retryShortcut" class="retry-shortcut" type="button" aria-controls="retryBatchPanel" hidden></button><button id="prepareButton" class="primary full">预览准备计划</button><button id="prepareConfirmButton" class="primary full" hidden>确认开始准备（会调用模型）</button><button id="planButton" class="primary full" hidden>预览扫描计划</button><button id="startButton" class="primary full" hidden>开始扫描</button><button id="terminateButton" class="danger full" hidden>终止计划</button><a id="prepareEditorLink" class="q-workbench-link" href="/editor">前往翻译工作台</a></div>
+            <p class="tiny q-result-footnote">有效参考可参与选择；实际注入受命中范围、每单元容量和人工优先规则影响。</p>
+          </aside>
+        </div>
+        <details id="executionDetails" class="panel q-execution-details"><summary>处理结果与待办</summary><div id="prepareSummary" class="prepare-summary"></div><div id="prepareErrors"></div><details class="q-record-fold"><summary>调用与复用记录</summary><div id="prepareReuse" class="prepare-reuse"></div><p id="prepareNotice" class="prepare-note" hidden></p></details></details>
+        <div id="prepareStale" class="prepare-stale" role="status" hidden></div>
+        <details class="history panel"><summary>最近扫描记录 <span id="historyCount"></span></summary><div id="historyList"></div></details>
+      </section>
+      <section id="reviewView" aria-labelledby="reviewTab" hidden>
+        <details class="panel q-execution-details" id="terminologyAudit"><summary id="terminologyAuditTitle">术语一致性检查</summary><p class="tiny">按当前有效概念卡与已保存译文做只读字面检查；疑似项需人工核对义项，不会自动修改或重译。</p><div id="terminologyAuditList"></div></details>
+        <div class="review-layout"><aside class="panel review-queue"><div class="panel-title"><div><h2>概念列表</h2><p>解释与依据放在一起，逐条判断。</p></div></div><div class="queue-filters"><label><span class="sr-only">概念状态</span><select id="reviewState"><option value="all">全部概念</option><option value="pending_review">待复检</option><option value="approved">有效参考</option><option value="deferred">已暂缓</option><option value="rejected">已驳回</option></select></label><label><span class="sr-only">搜索概念</span><input id="conceptSearch" type="search" placeholder="搜索概念…"></label></div><details id="groupPanel" class="queue-groups"><summary>相关表达分组 <span id="groupCount"></span></summary><label class="check-label write-only"><input id="writeOnly" type="checkbox">只看书写重复候选</label><div id="groupList"></div><p class="tiny">同一表达出现在多张卡时列在这里，只表示表达可能相关，不代表语义等价；一张卡可能同时出现在多个组中。筛选“只看书写重复候选”只改变显示，不读取、不修改卡片数据，也不把分组当成传递性的等价关系。</p></details><div class="batch-bar" id="batchBar" hidden><span id="batchCount" class="batch-count"></span><button id="batchApprove" class="primary small">批量批准</button><button id="batchDefer" class="small">批量暂缓</button><button id="batchReject" class="quiet small">批量驳回</button><button id="batchClear" class="text-button">清空选择</button></div><p id="batchHint" class="tiny batch-hint" hidden></p><div id="cardList" class="card-list"></div><p id="referenceVersion" class="queue-foot"></p></aside><div class="q-detail-column"><button id="backToCards" class="text-button q-mobile-back">‹ 返回概念列表</button><article id="cardDetail" class="panel review-detail"></article></div></div>
+      </section>
+    </div>
+    <footer class="page-footer">Mode2 · 概念辨析<span>已确认的准备在服务器继续执行；离开后可返回查看。未保存的概念编辑仍受保护。</span></footer>
+  </main>
+  <dialog id="scopeDialog" aria-labelledby="scopeDialogTitle"><div class="dialog-head"><h2 id="scopeDialogTitle">调整准备范围</h2><button id="closeScope" aria-label="关闭范围选择">×</button></div><div class="q-scope-options"><label><input id="scopeAll" type="radio" name="scopeMode" value="all">整个项目</label><label><input id="scopeCustom" type="radio" name="scopeMode" value="custom">自选单元</label></div><p class="tiny">自选为空时不能预览，不会自动扩大到整个项目。</p><section class="unit-panel" aria-label="选择准备单元">
+            <div class="panel-title"><div><h2>选择准备单元</h2><p>筛选不会清除已选项；此范围独立于翻译工作台。</p></div><span id="totalCount" class="tag"></span></div>
+            <div class="filters"><label class="search"><span class="sr-only">搜索单元</span><input id="search" type="search" placeholder="搜索编号、ID 或原文…"></label><label><span class="sr-only">按章节筛选</span><select id="chapter"><option value="">全部章节</option></select></label><label><span class="sr-only">按扫描状态筛选</span><select id="scanState"><option value="">全部状态</option><option value="new">未扫描</option><option value="scanned">已扫描</option></select></label></div>
+            <div class="selection-tools">
+              <div class="quick-row"><label for="nextCount">快速选取</label><input id="nextCount" type="number" min="1" value="20"><span>个未扫描单元</span><button id="selectNext" class="small">加入选择</button><span class="tiny">按当前筛选，从前往后选</span></div>
+              <details id="rangeDetails"><summary>按编号范围选择 <span>例如 1–20、25、30–45</span></summary><div class="range-row"><label class="sr-only" for="rangeInput">单元编号范围</label><input id="rangeInput" placeholder="1-20, 25, 30-45"><button id="addRange" class="small">加入范围</button><button id="removeRange" class="small quiet">移出范围</button></div><p class="tiny">范围针对整个项目的显示编号，可跨章节，不改变单元切分。</p></details>
+            </div>
+            <div class="list-toolbar"><label class="check-label"><input id="selectVisible" type="checkbox">全选筛选结果 <span id="filteredCount"></span></label><label class="check-label"><input id="selectedOnly" type="checkbox">只看已选</label></div>
+            <div id="unitList" class="unit-list" tabindex="0" aria-label="单元列表"></div><div class="list-footer"><span id="listFootnote"></span><span class="selection-line"><strong id="selectedCount">0</strong> 个已选 · <span id="selectionWords"></span> <button id="clearSelection" class="text-button">清空</button></span></div>
+          </section><div class="q-dialog-actions"><button id="doneScope" class="primary">完成选择</button></div></dialog>
+  <dialog id="settingsDialog" aria-labelledby="settingsDialogTitle"><div class="dialog-head"><h2 id="settingsDialogTitle">准备参数</h2><button id="closeSettings" aria-label="关闭参数设置">×</button></div><div class="batch-settings" id="prepareSettings">
+                <div class="batch-settings-fields">
+                  <label>每批英文词数上限<input id="maxWords" type="number" min="100" value="4000"></label>
+                  <label>并行批数<input id="maxParallel" type="number" min="1" value="1"></label>
+                </div>
+
+                <p class="tiny">批次按词数切分，不再限制批数、每批单元数或字符数；并行越高越易限流，失败批次单独记录。</p>
+              </div><p class="tiny">修改参数会使当前预览计划失效，不会触发模型请求。</p><div class="q-dialog-actions"><button id="doneSettings" class="primary">完成设置</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="sourceDialog"><div class="dialog-head"><h2 id="sourceTitle">原文与上下文</h2><button id="closeSource" aria-label="关闭原文预览">×</button></div><div id="sourceText" class="source-text"></div><details><summary>该单元实际使用的参考快照</summary><div id="sourceReference"></div></details><button id="sourceSelect" class="primary">加入扫描选择</button></dialog>
+  <dialog id="leaveDialog"><div class="dialog-head"><h2>还有未完成的工作</h2></div><p id="leaveMessage"></p><div class="review-actions"><button id="stayButton">留在当前页面</button><button id="leaveButton" class="danger">停止后离开</button></div></dialog>
+  <dialog id="batchDialog"><div class="dialog-head"><h2 id="batchTitle">确认批量操作</h2><button id="closeBatch" aria-label="关闭批量确认">×</button></div><p id="batchMessage" class="batch-message"></p><div id="batchList" class="batch-list"></div><p class="tiny">这里只处理你明确选中的卡片；不会自动批准、不会删除卡片，也不会合并证据。</p><div class="review-actions"><button id="batchCancel">取消</button><button id="batchConfirm" class="primary">确认</button></div></dialog>
+  <dialog id="retryBatchDialog" class="retry-batch-dialog" aria-labelledby="retryBatchTitle"><div class="dialog-head"><h2 id="retryBatchTitle">确认重试失败批次</h2><button id="closeRetryBatch" aria-label="关闭重试确认">×</button></div><p id="retryBatchMessage" class="batch-message"></p><dl id="retryBatchScope" class="retry-batch-scope-detail"></dl><p id="retryBatchWarning" class="retry-batch-warning"></p><p id="retryBatchResult" class="retry-batch-result" role="status"></p><div class="review-actions"><button id="retryBatchCancel">取消</button><button id="retryBatchConfirm" class="primary">确认重试</button></div></dialog>
+  <dialog id="retryBulkDialog" class="retry-batch-dialog" aria-labelledby="retryBulkTitle"><div class="dialog-head"><h2 id="retryBulkTitle">确认集中重试</h2><button id="closeRetryBulk" aria-label="关闭集中重试确认">×</button></div><p id="retryBulkSummary" class="batch-message"></p><ul id="retryBulkList" class="retry-bulk-confirm-list"></ul><p id="retryBulkWarning" class="retry-batch-warning"></p><div class="review-actions"><button id="retryBulkCancel">取消</button><button id="retryBulkConfirm" class="primary">确认重试选中批次</button></div></dialog>
+  <dialog id="modeDialog"><div class="dialog-head"><h2 id="modeTitle">切换参考模式</h2><button id="closeMode" aria-label="关闭模式确认">×</button></div><p id="modeMessage" class="batch-message"></p><p class="tiny">切换只影响之后的翻译请求：已经跑过的单元保持当时冻结的参考，人工批准、暂缓和驳回的卡片不受影响；打开页面与切换模式本身都不会调用模型。</p><div class="review-actions"><button id="prepareSwitchButton" class="small quiet" hidden>切换为人工模式</button><button id="prepareEnableButton" class="small quiet" hidden>切换为自动模式</button><button id="modeCancel">取消</button><button id="modeConfirm" class="primary">确认切换</button></div></dialog>
+</body>
+</html>

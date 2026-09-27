@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>翻译项目 · Mode2 AutoTranslator</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260910-legacy-css-cleanup-r1">
+  <link rel="stylesheet" href="/static/projects.css?v=2">
+  <script src="/static/projects.js?v=20260829-manual-editor-r1" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">M2</div>
+        <div>
+          <div class="brand-name">Mode2 AutoTranslator</div>
+          <div class="brand-meta">翻译项目</div>
+        </div>
+      </div>
+      <div class="topbar-status">
+        <span id="connectionDot" class="status-dot"></span>
+        <span id="connectionText">正在连接</span>
+        <a class="button button-link secondary" href="/settings">API 设置</a>
+      </div>
+    </header>
+
+    <main class="projects-main">
+      <div class="section-heading projects-heading">
+        <div>
+          <p class="eyebrow">PROJECT LIBRARY</p>
+          <h1>翻译项目</h1>
+          <p class="projects-subtitle">选择一个项目继续工作</p>
+        </div>
+        <button id="newProjectButton" class="button primary" type="button">新建项目</button>
+      </div>
+      <p id="pageStatus" class="project-page-status" role="status"></p>
+
+      <section id="projectGrid" class="project-grid" aria-label="已有翻译项目"></section>
+      <section id="emptyState" class="project-empty" hidden>
+        <div class="state-icon warning">+</div>
+        <strong>还没有翻译项目</strong>
+        <span>创建第一个项目后，从这里进入编辑器。</span>
+        <button id="emptyCreateButton" class="button primary" type="button">新建项目</button>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="projectDialog" class="project-dialog">
+    <form id="projectForm">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">NEW PROJECT</p>
+          <h2>新建项目</h2>
+        </div>
+        <button id="cancelProjectButton" class="dialog-close" type="button" aria-label="取消">×</button>
+      </div>
+      <label class="field">
+        <span>项目名称</span>
+        <input id="projectNameInput" type="text" maxlength="100" autocomplete="off" required placeholder="例如：我的第一本书">
+      </label>
+      <p id="dialogStatus" class="project-dialog-status" role="status"></p>
+      <div class="dialog-actions">
+        <button id="cancelProjectAction" class="button secondary" type="button">取消</button>
+        <button id="createProjectAction" class="button primary" type="submit">创建并进入</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -1,0 +1,198 @@
+/* Shared top bar and page frame for the workbench (/editor) and concept (/quality) pages.
+   Loaded last on both pages so the two share one verified visual shell.
+   Intentionally limited to the top bar and page frame; page-specific panels stay in
+   styles.css / quality-page.css and must not leak into each other. */
+:root {
+  --shell-bg: #f4f6f8;
+  --shell-ink: #23313e;
+  --shell-muted: #74818d;
+  --shell-line: #e2e7ed;
+  --shell-blue: #2568d8;
+}
+
+body {
+  margin: 0;
+  background: var(--shell-bg);
+  color: var(--shell-ink);
+  font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+}
+
+.topbar {
+  height: 72px;
+  background: #fff;
+  border-bottom: 1px solid var(--shell-line);
+  display: flex;
+  align-items: center;
+  padding: 0 36px;
+  gap: 54px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--shell-ink);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.brand-mark {
+  height: 36px;
+  width: 36px;
+  display: grid;
+  place-items: center;
+  background: #253746;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 15px;
+}
+.brand-sub {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  font-weight: 400;
+  margin-top: 4px;
+  color: var(--shell-muted);
+}
+.app-nav {
+  height: 100%;
+  display: flex;
+  gap: 26px;
+  align-items: center;
+  min-width: 0;
+}
+.app-nav a {
+  border: none;
+  border-radius: 0;
+  background: none;
+  padding: 24px 2px;
+  font-size: 13px;
+  color: var(--shell-muted);
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.app-nav a.active {
+  color: var(--shell-blue);
+  border-bottom: 2px solid var(--shell-blue);
+  font-weight: 650;
+}
+.connection-state {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--shell-muted);
+  white-space: nowrap;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #23715b;
+  box-shadow: 0 0 0 3px #e6f5ee;
+  flex: 0 0 auto;
+}
+.status-dot.offline {
+  background: #b42318;
+  box-shadow: 0 0 0 3px #fff0ee;
+}
+
+main {
+  max-width: 1440px;
+  width: 100%;
+  padding: 26px 36px 16px;
+  margin: auto;
+}
+.breadcrumb {
+  font-size: 12px;
+  color: var(--shell-muted);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 17px;
+}
+.breadcrumb a {
+  color: var(--shell-blue);
+  text-decoration: none;
+}
+.breadcrumb a:hover {
+  text-decoration: underline;
+}
+.breadcrumb strong {
+  color: #51606e;
+  font-weight: 500;
+}
+.page-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 23px;
+}
+.page-heading h1 {
+  font-size: 28px;
+  letter-spacing: -0.7px;
+  font-weight: 650;
+  margin: 0;
+}
+.page-heading p {
+  margin: 6px 0 0;
+  color: var(--shell-muted);
+  font-size: 13px;
+}
+
+@media (max-width: 800px) {
+  .topbar {
+    gap: 20px;
+    height: auto;
+    min-height: 66px;
+    flex-wrap: wrap;
+    padding: 14px 20px;
+    row-gap: 12px;
+  }
+  .app-nav {
+    order: 3;
+    width: 100%;
+    gap: 24px;
+  }
+  .app-nav a {
+    padding: 6px 0;
+  }
+  .brand-sub {
+    display: none;
+  }
+  .connection-state {
+    font-size: 10px;
+    max-width: 190px;
+  }
+  main {
+    padding: 20px;
+  }
+  .page-heading {
+    align-items: flex-start;
+  }
+  .page-heading h1 {
+    font-size: 24px;
+  }
+}
+
+@media (max-width: 450px) {
+  main {
+    padding: 16px 12px;
+  }
+  .topbar {
+    padding: 12px 16px;
+  }
+  .page-heading h1 {
+    font-size: 22px;
+  }
+  .breadcrumb {
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    font-size: 11px;
+  }
+}

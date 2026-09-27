@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API 设置 · Mode2 AutoTranslator</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260910-legacy-css-cleanup-r1">
+  <link rel="stylesheet" href="/static/settings.css?v=4">
+  <script src="/static/settings.js?v=5" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">M2</div>
+        <div>
+          <div class="brand-name">Mode2 AutoTranslator</div>
+          <div class="brand-meta">API 配置</div>
+        </div>
+      </div>
+      <div class="topbar-status">
+        <span id="connectionDot" class="status-dot"></span>
+        <span id="connectionText">正在连接</span>
+        <a class="button button-link secondary" href="/">返回项目选择</a>
+      </div>
+    </header>
+
+    <main class="settings-main">
+      <div class="section-heading settings-heading">
+        <div>
+          <p class="eyebrow">API CONFIGURATION</p>
+          <h1>API 设置</h1>
+        </div>
+        <span id="pageStatus" class="settings-page-status" role="status"></span>
+      </div>
+
+      <section class="segmentation-card panel" aria-label="翻译单元目标长度设置">
+        <div class="segmentation-heading">
+          <div>
+            <p class="eyebrow">TEXT SEGMENTATION</p>
+            <h2>翻译单元目标长度</h2>
+            <p class="segmentation-help">控制当前项目中 Python 切分程序希望接近的英文词数。它不是硬上限：程序优先保留完整句子，并会在相邻句子边界中选择更接近目标的位置；标题、列表和没有可靠句界的文本可能较短或采用安全回退。</p>
+          </div>
+          <span id="segmentationProject" class="scope-state">未加载</span>
+        </div>
+        <form id="segmentationForm" class="segmentation-form">
+          <label class="field"><span>目标英文词数</span><input id="targetSegmentWords" type="number" min="1" max="100000" step="1" required></label>
+          <button class="button primary" type="submit">保存切分设置</button>
+        </form>
+        <div class="segmentation-resegment">
+          <div>
+            <strong>重新切分当前项目</strong>
+            <p>会从本项目保存的原始文件重新导入，并清除当前译文、校验结果和导出文件。执行前会自动保留一份项目状态备份。</p>
+          </div>
+          <button id="resegmentSourceButton" class="button secondary" type="button">按当前目标重新切分</button>
+        </div>
+        <p id="segmentationResult" class="settings-result" role="status"></p>
+      </section>
+
+      <section class="segmentation-card panel context-settings-card" aria-label="翻译上下文设置">
+        <div class="segmentation-heading">
+          <div>
+            <p class="eyebrow">TRANSLATION CONTEXT</p>
+            <h2>翻译前后文参考范围</h2>
+            <p class="segmentation-help">翻译当前单元时，模型可以参考相邻原文来判断人物、指代、语气和术语。前后文只用于理解，不会作为需要输出的正文；词数是目标值，程序优先保持完整句子。设置为 0 可关闭对应方向。</p>
+          </div>
+          <span id="translationContextProject" class="scope-state">未加载</span>
+        </div>
+        <form id="translationContextForm" class="segmentation-form">
+          <label class="field"><span>前文参考词数</span><input id="previousContextWords" type="number" min="0" max="4000" step="1" required></label>
+          <label class="field"><span>后文参考词数</span><input id="nextContextWords" type="number" min="0" max="4000" step="1" required></label>
+          <button class="button primary" type="submit">保存上下文设置</button>
+        </form>
+        <p id="translationContextResult" class="settings-result" role="status"></p>
+      </section>
+
+      <section class="oc-go-card panel" aria-label="OpenCode Go 套餐适配">
+        <div>
+          <p class="eyebrow">OPENCODE GO</p>
+          <h2>OC Go 套餐适配</h2>
+          <p class="segmentation-help">启用后，检验和翻译请求会使用专用 Agent 标识，并发送稳定的 <code>x-opencode-session</code> 会话 ID。不会改动 Base URL、API Key 或 Model。</p>
+          <p id="ocGoResult" class="settings-result" role="status"></p>
+        </div>
+        <div class="oc-go-actions">
+          <span id="ocGoState" class="scope-state">未加载</span>
+          <button id="ocGoToggleButton" class="button primary" type="button" disabled>启用 OC Go 适配</button>
+        </div>
+      </section>
+
+      <section class="settings-grid" aria-label="独立 API 配置">
+        <article class="settings-card panel" data-scope="inspection">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">INSPECTION API</p>
+              <h2>检验 API</h2>
+            </div>
+            <span class="scope-state" data-state="inspection">未加载</span>
+          </div>
+          <form class="settings-form" data-form="inspection">
+            <input data-field="oc_go_compatibility" type="hidden" value="false">
+            <input data-field="opencode_session_id" type="hidden" value="">
+            <label class="field"><span>API Base URL</span><input data-field="base_url" type="url" required autocomplete="url"></label>
+            <label class="field"><span>API Key（可留空）</span><input data-field="api_key" type="password" autocomplete="new-password" placeholder="无鉴权接口可留空"></label>
+            <div class="field">
+              <span>Model（拉取时可留空）</span>
+              <div class="model-control">
+                <div class="model-input-row">
+                  <input data-field="model" type="text" required>
+                  <button class="button secondary" type="button" data-action="models" data-scope="inspection">拉取模型</button>
+                </div>
+                <select class="model-list" data-model-list="inspection" aria-label="选择检验 API 模型" hidden>
+                  <option value="">选择已拉取的模型</option>
+                </select>
+              </div>
+            </div>
+            <label class="field"><span>思考强度 / Reasoning Effort</span><input data-field="reasoning_effort" type="text" placeholder="留空表示不发送"></label>
+            <div class="settings-fields-row">
+              <label class="field"><span>Temperature</span><input data-field="temperature" type="number" min="0" max="2" step="0.1" required></label>
+              <label class="field"><span>最大输出 Token</span><input data-field="max_output_tokens" type="number" min="1" max="1000000" step="1" required></label>
+            </div>
+            <label class="field"><span>请求超时（秒）</span><input data-field="timeout_seconds" type="number" min="1" max="600" step="1" required></label>
+            <div class="settings-actions">
+              <button class="button secondary" type="button" data-action="test" data-scope="inspection">测试检验 API</button>
+              <button class="button primary" type="submit">保存检验配置</button>
+            </div>
+            <p class="settings-result" data-result="inspection" role="status"></p>
+          </form>
+        </article>
+
+        <article class="settings-card panel" data-scope="translation">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">TRANSLATION API</p>
+              <h2>翻译 API</h2>
+            </div>
+            <span class="scope-state" data-state="translation">未加载</span>
+          </div>
+          <form class="settings-form" data-form="translation">
+            <input data-field="oc_go_compatibility" type="hidden" value="false">
+            <input data-field="opencode_session_id" type="hidden" value="">
+            <label class="field"><span>API Base URL</span><input data-field="base_url" type="url" required autocomplete="url"></label>
+            <label class="field"><span>API Key（可留空）</span><input data-field="api_key" type="password" autocomplete="new-password" placeholder="无鉴权接口可留空"></label>
+            <div class="field">
+              <span>Model（拉取时可留空）</span>
+              <div class="model-control">
+                <div class="model-input-row">
+                  <input data-field="model" type="text" required>
+                  <button class="button secondary" type="button" data-action="models" data-scope="translation">拉取模型</button>
+                </div>
+                <select class="model-list" data-model-list="translation" aria-label="选择翻译 API 模型" hidden>
+                  <option value="">选择已拉取的模型</option>
+                </select>
+              </div>
+            </div>
+            <label class="field"><span>思考强度 / Reasoning Effort</span><input data-field="reasoning_effort" type="text" placeholder="留空表示不发送"></label>
+            <div class="settings-fields-row">
+              <label class="field"><span>Temperature</span><input data-field="temperature" type="number" min="0" max="2" step="0.1" required></label>
+              <label class="field"><span>最大输出 Token</span><input data-field="max_output_tokens" type="number" min="1" max="1000000" step="1" required></label>
+            </div>
+            <label class="field"><span>请求超时（秒）</span><input data-field="timeout_seconds" type="number" min="1" max="600" step="1" required></label>
+            <div class="settings-actions">
+              <button class="button secondary" type="button" data-action="test" data-scope="translation">测试翻译 API</button>
+              <button class="button primary" type="submit">保存翻译配置</button>
+            </div>
+            <p class="settings-result" data-result="translation" role="status"></p>
+          </form>
+        </article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>翻译工作台 · Mode2 AutoTranslator</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260924-pdf-character-recovery-r1">
+  <link rel="stylesheet" href="/static/shell.css?v=20260910-workbench-unify-r3">
+  <script src="/static/quality.js?v=20260920-omitted-count-r1" defer></script>
+  <script src="/static/app.js?v=20260924-pdf-character-recovery-r1" defer></script>
+</head>
+<body class="workbench-page">
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" title="返回项目选择">
+        <span class="brand-mark">M2</span>
+        <span>Mode2<span class="brand-sub">AutoTranslator</span></span>
+      </a>
+      <nav class="app-nav" aria-label="工作区导航">
+        <a id="workbenchNavLink" class="active" aria-current="page" href="/editor">翻译工作台</a>
+        <a id="qualityEntryLink" href="/quality">概念辨析</a>
+        <a href="/settings">API 设置</a>
+      </nav>
+      <span class="connection-state" role="status">
+        <span id="connectionDot" class="status-dot"></span>
+        <span id="connectionText">正在连接</span>
+      </span>
+    </header>
+
+    <main>
+      <div class="breadcrumb"><a href="/">← 项目选择</a><span>/</span><strong id="projectBreadcrumb">正在加载…</strong></div>
+
+      <div class="page-heading">
+        <div>
+          <h1>翻译工作台</h1>
+          <p id="projectSource" class="project-source">尚未导入源文件</p>
+          <p id="draftStatus" class="draft-status" role="status" aria-live="polite" hidden></p>
+        </div>
+        <div id="runBadge" class="run-badge ready">准备就绪</div>
+      </div>
+
+      <section class="control-strip panel" aria-label="翻译控制">
+        <div class="control-row">
+          <div class="concurrency-control">
+            <label class="inline-field" for="concurrencyInput">并发数</label>
+            <input id="concurrencyInput" type="number" min="1" step="1" value="3">
+            <span id="concurrencyStatus" class="concurrency-status" role="status" aria-live="polite">已确认：3</span>
+            <button id="confirmConcurrencyButton" class="button secondary" type="button" disabled>确认并发数</button>
+          </div>
+          <div class="control-actions">
+            <button id="importButton" class="button secondary">导入源文件</button>
+            <input id="sourceFileInput" type="file" accept=".pdf,.epub,.md,.markdown,.txt" hidden>
+            <button id="startButton" class="button primary">开始流水线</button>
+            <button id="stopButton" class="button danger" disabled>停止流水线</button>
+            <label class="inline-field" for="outputFormatSelect">输出格式</label>
+            <select id="outputFormatSelect">
+              <option value="markdown">Markdown</option>
+              <option value="text">TXT</option>
+              <option value="pdf">PDF</option>
+              <option value="epub">EPUB</option>
+            </select>
+            <button id="exportButton" class="button success" disabled>输出完整文档</button>
+            <span id="outputStatusText" class="output-status-text" aria-live="polite">正在检查输出状态</span>
+          </div>
+        </div>
+        <div id="glyphPrecheck" class="glyph-precheck" role="status" aria-live="polite" hidden>
+          <span id="glyphPrecheckText"></span>
+          <button id="glyphRepairButton" class="button secondary" type="button" hidden>批量重译可修复单元</button>
+        </div>
+        <p id="pipelineStopNotice" class="pipeline-stop-notice" role="status" aria-live="polite" hidden></p>
+      </section>
+
+      <section class="stats-strip panel" aria-label="项目统计">
+        <div class="stat"><span>总单元</span><strong id="metricTotal">0</strong></div>
+        <div class="stat"><span>处理中</span><strong id="metricActive">0</strong></div>
+        <div class="stat"><span>已通过</span><strong id="metricPassed">0</strong></div>
+        <div class="stat"><span>待处理</span><strong id="metricNeedsAction">0</strong></div>
+        <div class="stat"><span>接受风险</span><strong id="metricAccepted">0</strong></div>
+      </section>
+
+      <section class="progress-section panel" aria-label="项目进度">
+        <div class="progress-header">
+          <span>项目进度</span>
+          <strong id="progressText">0%</strong>
+        </div>
+        <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      </section>
+
+      <section class="workspace-grid">
+        <aside class="unit-panel panel">
+          <div class="panel-heading">
+            <div>
+              <h2>翻译单元</h2>
+            </div>
+            <span id="unitCount" class="count-pill">0</span>
+          </div>
+          <div class="filter-tabs" role="tablist">
+            <button class="filter-tab active" data-filter="all">全部</button>
+            <button class="filter-tab" data-filter="active">处理中</button>
+            <button class="filter-tab" data-filter="needs_action">待处理</button>
+            <button class="filter-tab" data-filter="done">完成</button>
+          </div>
+          <div class="unit-selection-tools">
+            <div class="selection-actions">
+              <button id="selectAllButton" class="button secondary" type="button">全选可处理</button>
+              <button id="clearSelectionButton" class="button secondary" type="button">取消全选</button>
+            </div>
+            <div class="selection-meta"><span id="selectionHint">勾选要处理的单元</span><strong id="selectedCount">已选 0 个</strong></div>
+          </div>
+          <div id="unitList" class="unit-list"></div>
+        </aside>
+
+        <section class="detail-column">
+          <article id="detailPanel" class="detail-panel panel"></article>
+          <article class="events-panel panel">
+            <div class="panel-heading compact-heading">
+              <div>
+                <h2>运行记录</h2>
+              </div>
+              <span class="live-label"><span class="live-dot"></span>实时</span>
+            </div>
+            <div id="eventList" class="event-list"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="unitActionDialog" class="unit-action-dialog" aria-labelledby="unitActionDialogTitle" aria-describedby="unitActionDialogMessage">
+    <form method="dialog">
+      <h2 id="unitActionDialogTitle">确认操作</h2>
+      <p id="unitActionDialogMessage"></p>
+      <div id="unitActionDialogOptions" class="unit-action-dialog-options"></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

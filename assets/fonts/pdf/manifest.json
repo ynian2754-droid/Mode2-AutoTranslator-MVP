@@ -1,0 +1,47 @@
+{
+  "font_file": "Mode2SansCJKCN-Regular.ttf",
+  "font_family": "Mode2 Sans CJK CN",
+  "font_postscript_name": "Mode2SansCJKCN-Regular",
+  "format": "static TrueType",
+  "sha256": "bd53d5fd42d38a6f470f7b2fd01ec2b5a12df645bbdcf30273bd89bcbd19a6f6",
+  "upstream": {
+    "project": "Adobe Source Han Sans",
+    "release": "2.005R",
+    "tag_commit": "6c709ca72d3d7c46ab42ebecc1a26e7d69595a37",
+    "source_url": "https://github.com/adobe-fonts/source-han-sans/releases/tag/2.005R",
+    "source_file": "Variable/TTF/Subset/SourceHanSansCN-VF.ttf",
+    "source_sha256": "25a01e41b5cc99893eb35a6cd2cc7611841dc19eb03cba7f0c1de8210f2ba0b",
+    "license": "SIL Open Font License 1.1",
+    "license_url": "https://scripts.sil.org/OFL",
+    "license_file": "LICENSE.txt"
+  },
+  "derivation": {
+    "tool": "fontTools.varLib.instancer",
+    "tool_version": "4.61.1",
+    "axis": "wght",
+    "value": 400,
+    "static": true,
+    "renamed_family": "Mode2 Sans CJK CN",
+    "reason": "ReportLab requires TrueType outlines and does not support the upstream CFF/CFF2 static files."
+  },
+  "coverage": {
+    "unicode_cmap_entries": 30926,
+    "glyphs": 31072,
+    "tested_codepoints": [
+      "U+4E2D",
+      "U+5987",
+      "U+5973",
+      "U+5C31",
+      "U+4E1A",
+      "U+8D44",
+      "U+672C",
+      "U+4E3B",
+      "U+4E49",
+      "U+5BB6",
+      "U+5EAD",
+      "U+0031",
+      "U+0039",
+      "U+00A0"
+    ]
+  }
+}
