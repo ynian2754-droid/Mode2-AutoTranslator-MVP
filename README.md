@@ -10,7 +10,7 @@ Mode2 breaks long documents into traceable translation units, translates them in
 
 **中文速览：** 本地导入与切分文档，可先做概念辨析，再并行翻译、独立校验、人工审阅并导出。[查看完整中文说明](#simplified-chinese)。
 
-**[Download the latest Windows ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [Quick start](#quick-start-windows) · [User guide (简体中文)](USER_GUIDE.md)
+**[Download the latest Windows ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [Quick start](#quick-start-windows) · [English user guide](USER_GUIDE.en.md) · [简体中文手册](USER_GUIDE.md)
 
 ![A completed translation unit with source text, an editable saved translation, independent review status, and its reference snapshot](docs/images/03-unit-review.png)
 
@@ -74,7 +74,7 @@ A file translation script typically returns translated text. Mode2 keeps the sou
 2. Install **Python 3.10 or later with pip** separately, then run `安装依赖.bat` once in the extracted folder. The package does not include Python or a model service.
 3. Run `启动.bat`. Open `http://127.0.0.1:4873/` if your browser does not open automatically; configure and test both the translation and review OpenAI-compatible endpoints before processing a document.
 
-Create a project, import a file, and select the units to process. Concept preparation is optional: previewing its plan makes no model call, while confirming preparation does. See the [user guide](USER_GUIDE.md) for the full workflow and troubleshooting. PowerShell users can start with `./run.ps1`; `启动.bat 4874` uses a different port.
+Create a project, import a file, and select the units to process. Concept preparation is optional: previewing its plan makes no model call, while confirming preparation does. See the [English user guide](USER_GUIDE.en.md) for the full workflow and troubleshooting; the [Simplified Chinese guide](USER_GUIDE.md) is also available. PowerShell users can start with `./run.ps1`; `启动.bat 4874` uses a different port.
 
 ## What you can do
 
@@ -106,7 +106,7 @@ The app does not bundle an API key or model. When you test an endpoint or run tr
 
 ## Documentation and license
 
-The [user guide](USER_GUIDE.md) covers installation, API setup, concept preparation, translation, review, export, and troubleshooting (currently in Simplified Chinese). [Screenshot notes](docs/images/README_SCREENSHOTS.md) identify the demo images and their limits.
+The [English user guide](USER_GUIDE.en.md) and [Simplified Chinese guide](USER_GUIDE.md) cover installation, API setup, concept preparation, translation, review, export, and troubleshooting. [Screenshot notes](docs/images/README_SCREENSHOTS.md) identify the demo images and their limits.
 
 Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF fonts retain their upstream licenses; see [third-party notices](THIRD_PARTY_NOTICES.md) and the license files under `assets/fonts/pdf/`.
 
@@ -118,7 +118,7 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 
 **Mode2 AutoTranslator 是在 Windows 本机运行、可逐单元审阅的文档翻译工作台。** 它把文档切成可追踪单元；翻译前可以先辨析原文概念、核对候选和证据，为适用单元准备含义与术语参考。随后并行翻译、独立校验，留给人逐段修改、复检或明确接受风险，最后导出完整文档。模型服务由你通过 OpenAI-compatible API 配置。
 
-**[下载最新 Release ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [产品截图](#screenshots) · [使用与排错指南](USER_GUIDE.md)
+**[下载最新 Release ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [产品截图](#screenshots) · [使用与排错指南](USER_GUIDE.md) · [English user guide](USER_GUIDE.en.md)
 
 ### 为什么用 Mode2
 
@@ -154,4 +154,4 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 
 ### 文档与许可
 
-[用户手册](USER_GUIDE.md)包含安装、接口设置、概念准备、翻译、校验、导出和排错。本项目自有源码与文档采用 [MIT License](LICENSE)；内置 PDF 字体保留上游许可，见[第三方组件说明](THIRD_PARTY_NOTICES.md)。
+[英文使用手册](USER_GUIDE.en.md)与[简体中文使用手册](USER_GUIDE.md)包含安装、接口设置、概念准备、翻译、校验、导出和排错。本项目自有源码与文档采用 [MIT License](LICENSE)；内置 PDF 字体保留上游许可，见[第三方组件说明](THIRD_PARTY_NOTICES.md)。
