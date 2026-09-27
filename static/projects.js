@@ -24,7 +24,8 @@ async function request(path, options = {}) {
 function formatDate(value) {
   if (!value) return "时间未知";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString([], { hour12: false });
+  const locale = window.Mode2I18n?.locale === "en" ? "en-US" : undefined;
+  return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString(locale, { hour12: false });
 }
 
 function statusText(status) {
@@ -76,28 +77,33 @@ function renderProjects(projects) {
   }
   empty.hidden = true;
   grid.hidden = false;
-  grid.innerHTML = projects.map((project) => `
+  grid.innerHTML = projects.map((project) => {
+    const sourceNameMarkup = project.source_name
+      ? `<span data-i18n-ignore="true">${escapeHtml(project.source_name)}</span>`
+      : `<span>尚未导入源文件</span>`;
+    return `
     <article class="project-card panel">
       <div class="project-card-top">
         <div>
           <p class="eyebrow">TRANSLATION PROJECT</p>
-          <h2>${escapeHtml(project.name)}</h2>
+          <h2 data-i18n-ignore="true">${escapeHtml(project.name)}</h2>
         </div>
         ${project.is_current ? '<span class="project-current">当前项目</span>' : ""}
       </div>
       <div class="project-meta">
         <span>${escapeHtml(statusText(project.status))}</span>
-        <span>最近修改 ${escapeHtml(formatDate(project.updated_at))}</span>
+        <span>最近修改 <time data-i18n-ignore="true">${escapeHtml(formatDate(project.updated_at))}</time></span>
       </div>
       <p class="project-summary">
-        ${escapeHtml(project.source_name || "尚未导入源文件")} · ${project.unit_count ?? 0} 个翻译单元
+        ${sourceNameMarkup}<span> · </span><span>${project.unit_count ?? 0} 个翻译单元</span>
       </p>
        <div class="project-actions">
          <button class="button secondary enter-project-button" type="button" data-project-id="${escapeHtml(project.id)}">进入项目</button>
          <button class="button danger delete-project-button" type="button" data-project-id="${escapeHtml(project.id)}">删除项目</button>
        </div>
     </article>
-  `).join("");
+  `;
+  }).join("");
   grid.querySelectorAll(".enter-project-button").forEach((button) => {
     button.addEventListener("click", () => enterProject(button.dataset.projectId, button));
   });
@@ -189,4 +195,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event.target === $("projectDialog")) closeProjectDialog();
   });
   loadProjects();
+});
+
+window.addEventListener("mode2:localechange", () => {
+  if (projectSummaries.size) renderProjects([...projectSummaries.values()]);
 });

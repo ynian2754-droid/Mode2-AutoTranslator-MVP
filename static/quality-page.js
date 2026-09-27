@@ -136,7 +136,7 @@ async function qLoad(initial=false) {
     qp.observedPrepareId=loadedPrepareId;
     qp.prepareOutcomeUnknown=false;
     qp.blocked=false; $("pageError").hidden=true; $("pageLoading").hidden=true; $("qualityWorkspace").hidden=false;
-    $("projectName").textContent=project.current_project.name||qp.catalogId; $("connectionText").textContent="本地项目已连接";
+    $("projectName").dataset.i18nIgnore="true"; $("projectName").textContent=project.current_project.name||qp.catalogId; $("connectionText").textContent="本地项目已连接";
     const target=new URLSearchParams(location.search).get("unit_id");
     if (initial && target && qp.units.some(u=>u.id===target&&String(u.source||"").trim())) qp.selected.add(target);
     if (initial) qp.scopeMode = target ? "custom" : "all";
@@ -167,8 +167,8 @@ async function qRefreshSupport() {
 function qRenderTerminologyAudit() {
   const audit=qp.support?.terminology_audit||{}, mismatches=audit.mismatches||[], conflicts=audit.conflicts||[];
   $("terminologyAuditTitle").textContent=`术语一致性检查 · 疑似 ${mismatches.length} 条 · 冲突 ${conflicts.length} 条`;
-  const mismatchRows=mismatches.map(row=>`<div class="history-item"><strong>${qe(row.unit_id)} · ${qe(row.expression)}</strong><p>统一译名：${qe(row.canonical)} · ${qe(row.reason)}${row.found_variants?`（${qe(row.found_variants)}）`:""}</p><p>当前状态：${qe(row.status)}</p></div>`);
-  const conflictRows=conflicts.map(row=>`<div class="history-item"><strong>${qe(row.unit_id)} · ${qe(row.expression)} · 译名冲突</strong><p>候选：${qe((row.canonicals||[]).join("、")||"缺少明确译名")} · 卡片：${qe((row.card_ids||[]).join("、"))}</p><p>此处不强制猜测统一译名，请人工核对义项。</p></div>`);
+  const mismatchRows=mismatches.map(row=>`<div class="history-item"><strong><span data-i18n-ignore="true">${qe(row.unit_id)} · ${qe(row.expression)}</span></strong><p><span>统一译名：</span><span data-i18n-ignore="true">${qe(row.canonical)}</span><span> · </span><span>${qe(row.reason)}</span>${row.found_variants?`<span> · </span><span>其他译法：</span><span data-i18n-ignore="true">${qe(row.found_variants)}</span>`:""}</p><p>当前状态：${qe(row.status)}</p></div>`);
+  const conflictRows=conflicts.map(row=>`<div class="history-item"><strong><span data-i18n-ignore="true">${qe(row.unit_id)} · ${qe(row.expression)}</span><span> · </span><span>译名冲突</span></strong><p><span>候选：</span><span data-i18n-ignore="true">${qe((row.canonicals||[]).join("、")||"缺少明确译名")}</span><span> · </span><span>卡片：</span><span data-i18n-ignore="true">${qe((row.card_ids||[]).join("、"))}</span></p><p>此处不强制猜测统一译名，请人工核对义项。</p></div>`);
   $("terminologyAuditList").innerHTML=[...mismatchRows,...conflictRows].join("")||'<p class="tiny">当前未发现可识别的疑似差异或卡片冲突。</p>';
 }
 function qCardDetailOpenState() {
@@ -251,7 +251,7 @@ function qRenderUnits() {
   $("filteredCount").textContent=`(${eligible.length})`;
   const n=eligible.filter(u=>qp.selected.has(u.id)).length;
   $("selectVisible").checked=!!eligible.length&&n===eligible.length; $("selectVisible").indeterminate=n>0&&n<eligible.length;
-  $("unitList").innerHTML=visible.map(unit=>`<div class="unit-row ${qp.selected.has(unit.id)?"selected":""}"><input type="checkbox" aria-label="选择单元 ${unit.displayNumber}" data-unit="${qe(unit.id)}" ${qp.selected.has(unit.id)?"checked":""}><span class="unit-number">${String(unit.displayNumber).padStart(3,"0")}</span><div class="unit-copy"><button class="unit-title" data-source="${qe(unit.id)}">${qe(unit.id)} · ${qe(unit.section)}</button><p>${qe(unit.source)}</p></div><div class="unit-meta"><span>${Number(unit.source_words||0)} 词</span><span class="${covered.has(unit.id)?"scanned":""}">${!String(unit.source||"").trim()?"无原文":covered.has(unit.id)?"已扫描":"未扫描"}</span></div></div>`).join("")||'<div class="empty">没有匹配的单元。请调整筛选，或先在工作台导入原文。</div>';
+  $("unitList").innerHTML=visible.map(unit=>`<div class="unit-row ${qp.selected.has(unit.id)?"selected":""}"><input type="checkbox" aria-label="选择单元 ${unit.displayNumber}" data-unit="${qe(unit.id)}" ${qp.selected.has(unit.id)?"checked":""}><span class="unit-number">${String(unit.displayNumber).padStart(3,"0")}</span><div class="unit-copy"><button class="unit-title" data-source="${qe(unit.id)}" data-i18n-ignore="true">${qe(unit.id)} · ${qe(unit.section)}</button><p data-i18n-ignore="true">${qe(unit.source)}</p></div><div class="unit-meta"><span>${Number(unit.source_words||0)} 词</span><span class="${covered.has(unit.id)?"scanned":""}">${!String(unit.source||"").trim()?"无原文":covered.has(unit.id)?"已扫描":"未扫描"}</span></div></div>`).join("")||'<div class="empty">没有匹配的单元。请调整筛选，或先在工作台导入原文。</div>';
   $("listFootnote").textContent=`显示 ${visible.length} / ${qp.units.length} 个单元`;
   const chosen=qp.units.filter(u=>qp.selected.has(u.id)), hidden=chosen.length-n;
   $("listFootnote").textContent += hidden ? ` · ${hidden} 个已选被筛选隐藏` : "";
@@ -582,7 +582,7 @@ function qRenderCards() {
   const pending=["all","pending_review"].includes($("reviewState").value);
   $("cardList").innerHTML=cards.map(card=>{const content=$("reviewState").value==="approved"?qEffectiveContent(card):(card.draft||card.approved||{});
     const label=(content.expressions||[]).join("、")||"未命名概念";
-    const item=`<button class="concept-item ${card.id===qp.activeCard?"active":""}" data-card="${qe(card.id)}" ${card.id===qp.activeCard?'aria-current="true"':""}><strong>${qe(label)}</strong><p>${qe((content.acceptable_translations||[]).join("、"))}${qp.drafts.has(card.id)?" · 有编辑草稿":""}</p>${qOriginChip(card)}<span class="badge ${qe(card.check?.verdict||"unchecked")}">${qe(qNames[card.check?.verdict]||"未检查")}</span></button>`;
+    const item=`<button class="concept-item ${card.id===qp.activeCard?"active":""}" data-card="${qe(card.id)}" ${card.id===qp.activeCard?'aria-current="true"':""}><strong data-i18n-ignore="true">${qe(label)}</strong><p><span data-i18n-ignore="true">${qe((content.acceptable_translations||[]).join("、"))}</span>${qp.drafts.has(card.id)?'<span> · 有编辑草稿</span>':""}</p>${qOriginChip(card)}<span class="badge ${qe(card.check?.verdict||"unchecked")}">${qe(qNames[card.check?.verdict]||"未检查")}</span></button>`;
     return `<div class="concept-row">${pending&&card.status==="pending_review"?`<input type="checkbox" class="card-check" data-card-select="${qe(card.id)}" aria-label="选择概念 ${qe(label)}" ${qp.batch.has(card.id)?"checked":""}>`:""}${item}</div>`;}).join("")||'<div class="empty">此列表暂无概念</div>';
   qRenderBatch();
   qRenderCard();
@@ -637,15 +637,26 @@ function qRenderCard() {
     :`${qe(qStatus[card.status]||card.status)} · 草稿版本 ${Number(card.draft_revision)||0}${card.approved?" · 另有已生效版本（本次审核不会自动撤销旧版）":""}`;
   const verdict=card.check?.verdict||"unchecked";
   const evidence=(content.evidence||[]).map(item=>`<section class="evidence"><div class="evidence-head"><span>原文证据 · ${qe(item.unit_id)}</span><button class="text-button" data-source="${qe(item.unit_id)}">查看上下文 ↗</button></div><blockquote>${qe(item.source_excerpt||"")}</blockquote><p class="evidence-caption">原文版本 ${qe(String(item.source_sha256||"").slice(0,12))}</p></section>`).join("")||'<p class="notice">该概念没有可显示的原文证据。</p>';
+  const checkReasonText=(card.check?.reasons||[]).join("；");
+  const checkNoteMarkup=approved
+    ? '<span>以下展示人工批准的内容；独立检查记录针对候选草稿，可能与当前生效版本不同。</span>'
+    : checkReasonText?`<span data-i18n-ignore="true">${qe(checkReasonText)}</span>`:'<span>请核对解释、适用范围和原文证据后逐条判断。</span>';
+  const confusionText=(content.confusions||[]).join("；");
+  const confusionMarkup=confusionText?`<p data-i18n-ignore="true">${qe(confusionText)}</p>`:'<p>未列出</p>';
+  const openQuestionText=(content.open_questions||[]).join("；");
+  const openQuestionsMarkup=openQuestionText?`<p data-i18n-ignore="true">${qe(openQuestionText)}</p>`:'<p>未列出</p>';
+  const originBatchId=String(card.origin?.batch_id||"").trim();
+  const originUnitIds=(card.origin?.unit_ids||[]).join("、");
+  const originMarkup=`<p><span>来源：</span>${originBatchId?`<span data-i18n-ignore="true">${qe(originBatchId)}</span>`:'<span>未记录</span>'}<span> · </span><span data-i18n-ignore="true">${qe(originUnitIds)}</span></p>`;
   const canonical=qCanonicalNames(card);
   const canonicalNote=origin&&canonical?`<p class="auto-note live">当前统一译名（按适用义项）：${qe(canonical)}。其他候选只供人工比较，不参与模型参考。</p>`
     :origin==="automatic"?'<p class="auto-note">尚无检查确定的统一译名；候选只供人工比较，该卡暂不施加译名硬约束。</p>':"";
-  $("cardDetail").innerHTML=compare+canonicalNote+`<div class="detail-heading"><div><div class="detail-kicker">${kicker}</div><h2>${qe((content.expressions||[]).join("、")||"未命名概念")}</h2></div><span class="badge ${qe(verdict)}">${qe(qNames[verdict]||"未检查")}</span></div><div class="check-note ${qe(verdict)}">${approved?"以下展示人工批准的内容；独立检查记录针对候选草稿，可能与当前生效版本不同。":qe((card.check?.reasons||[]).join("；")||"请核对解释、适用范围和原文证据后逐条判断。")}</div>${automaticNote?`<p class="auto-note${origin==="automatic"?" live":""}">${automaticNote}</p>`:""}${draft?qEditMarkup(card,draft):`<section class="detail-section"><div class="section-label">概念含义</div><p class="meaning">${qe(content.meaning||"")}</p></section><div class="concept-fields"><section><div class="section-label">候选译法</div><span class="translation-chip">${qe((content.acceptable_translations||[]).join("、"))}</span></section><section><div class="section-label">适用语境</div><p>${qe(content.applies_when||"")}</p></section></div><section class="detail-section"><div class="section-label">容易混淆</div><p>${qe((content.confusions||[]).join("；")||"未列出")}</p></section>`}<details class="detail-expand"><summary>原文证据 · ${(content.evidence||[]).length} 条</summary>${evidence}</details><details class="detail-expand"><summary>待确认问题</summary><p>${qe((content.open_questions||[]).join("；")||"未列出")}</p></details><details class="detail-expand"><summary>来源批次与影响范围</summary><p>来源：${qe(card.origin?.batch_id||"未记录")} · ${qe((card.origin?.unit_ids||[]).join("、"))}</p>${qAffectedMarkup()}</details><div class="review-actions">${draft?'<span class="tiny">请先保存或取消编辑，再进行审核。</span>':approved?'<span class="tiny">人工批准的内容 · 有效参考</span>':card.status==="pending_review"?'<button data-card-action="edit">编辑解释</button><button data-card-action="reject" class="quiet">驳回</button><button data-card-action="defer" class="quiet">暂缓</button><button data-card-action="approve" class="primary">批准并查看下一条 →</button>':'<button data-card-action="restore" class="primary">重新放回复检队列</button>'}</div><p id="cardError" role="alert">${qe(draft?.error||"")}</p><p class="approval-hint">${draft?"页内切换保留编辑。保存不是批准；发生版本冲突时先保留输入，再刷新核对。":"只处理当前概念，不自动改写译文。"}</p>`;
+  $("cardDetail").innerHTML=compare+canonicalNote+`<div class="detail-heading"><div><div class="detail-kicker">${kicker}</div><h2>${qe((content.expressions||[]).join("、")||"未命名概念")}</h2></div><span class="badge ${qe(verdict)}">${qe(qNames[verdict]||"未检查")}</span></div><div class="check-note ${qe(verdict)}">${checkNoteMarkup}</div>${automaticNote?`<p class="auto-note${origin==="automatic"?" live":""}">${automaticNote}</p>`:""}${draft?qEditMarkup(card,draft):`<section class="detail-section"><div class="section-label">概念含义</div><p class="meaning">${qe(content.meaning||"")}</p></section><div class="concept-fields"><section><div class="section-label">候选译法</div><span class="translation-chip">${qe((content.acceptable_translations||[]).join("、"))}</span></section><section><div class="section-label">适用语境</div><p>${qe(content.applies_when||"")}</p></section></div><section class="detail-section"><div class="section-label">容易混淆</div>${confusionMarkup}</section>`}<details class="detail-expand"><summary>原文证据 · ${(content.evidence||[]).length} 条</summary>${evidence}</details><details class="detail-expand"><summary>待确认问题</summary>${openQuestionsMarkup}</details><details class="detail-expand"><summary>来源批次与影响范围</summary>${originMarkup}${qAffectedMarkup()}</details><div class="review-actions">${draft?'<span class="tiny">请先保存或取消编辑，再进行审核。</span>':approved?'<span class="tiny">人工批准的内容 · 有效参考</span>':card.status==="pending_review"?'<button data-card-action="edit">编辑解释</button><button data-card-action="reject" class="quiet">驳回</button><button data-card-action="defer" class="quiet">暂缓</button><button data-card-action="approve" class="primary">批准并查看下一条 →</button>':'<button data-card-action="restore" class="primary">重新放回复检队列</button>'}</div><p id="cardError" role="alert">${qe(draft?.error||"")}</p><p class="approval-hint">${draft?"页内切换保留编辑。保存不是批准；发生版本冲突时先保留输入，再刷新核对。":"只处理当前概念，不自动改写译文。"}</p>`;
   qControls();
 }
 function qAffectedMarkup() {
   const affected=qp.affected||{}, items=affected.affected||[];
-  return `<p>项目整体可能受影响：${items.length} 个单元（不是当前卡片的精确影响清单，也不代表发现误译）。${Number(affected.unknown_reference_count)||0} 个无历史参考记录。</p>${items.length?`<p>${qe(items.map(i=>i.unit_id).join("、"))}</p>`:""}`;
+  return `<p>项目整体可能受影响：${items.length} 个单元（不是当前卡片的精确影响清单，也不代表发现误译）。${Number(affected.unknown_reference_count)||0} 个无历史参考记录。</p>${items.length?`<p data-i18n-ignore="true">${qe(items.map(i=>i.unit_id).join("、"))}</p>`:""}`;
 }
 function qEditMarkup(card,draft) {
   const field=(key,label,rows=2)=>`<label>${label}<textarea name="${key}" rows="${rows}">${qe(draft.fields[key])}</textarea></label>`;
@@ -945,9 +956,13 @@ function qReuseMarkup(plan) {
 function qStaleReferenceMarkup(rows) {
   const list = rows || [];
   if (!list.length) return "";
+  const details = list.slice(0, 20).map(row => {
+    const reasons = String(row.reason || "").split("；").filter(Boolean);
+    return `<li><span data-i18n-ignore="true">${qe(row.unit_id)} · ${qe(row.card_id)}</span><span>：</span>${reasons.map(reason => `<span>${qe(reason)}</span>`).join('<span> · </span>')}</li>`;
+  }).join("");
   return `<strong>有 ${list.length} 条旧自动参考留在已译单元里</strong>`
     + `<p class="tiny">只做提示：不会自动重写译文。需要更新时请重新翻译对应单元。</p>`
-    + `<ul>${list.slice(0, 20).map(row => `<li>${qe(row.unit_id)} · ${qe(row.card_id)}：${qe(row.reason)}</li>`).join("")}</ul>`
+    + `<ul>${details}</ul>`
     + (list.length > 20 ? `<p class="tiny">只显示前 20 条，共 ${list.length} 条。</p>` : "");
 }
 function qPrepareProgressMarkup(c, running) {
@@ -1803,9 +1818,10 @@ function qPrepareActiveMarkup(progress) {
   return (rows.length?'<ul class="q-activity-list">'+rows.join("")+'</ul>':"")+(recent.length?'<details class="q-live-errors"><summary>最近错误 · '+recent.length+'</summary><ul>'+recent.join("")+'</ul></details>':"");
 }
 function qTimeText(value) {
-  if(!value)return "待确定";
+  if(!value)return window.Mode2I18n?.locale==="en"?"Not available":"待确定";
   const date=new Date(value);
-  return Number.isNaN(date.getTime())?String(value):date.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  const locale=window.Mode2I18n?.locale==="en"?"en-US":undefined;
+  return Number.isNaN(date.getTime())?String(value):date.toLocaleTimeString(locale, {hour:"2-digit",minute:"2-digit",second:"2-digit"});
 }
 function qPrepareBusinessStatusLabel(status) {
   return ({running:"正在执行",partial:"部分完成",complete:"准备完成",failed:"准备失败",
@@ -1965,3 +1981,7 @@ function qBind() {
 }
 function qInit() { qBind(); qLoad(true); }
 document.addEventListener("DOMContentLoaded",qInit);
+window.addEventListener("mode2:localechange",()=>{
+  const sync=$("prepareSyncMeta");
+  if(sync)sync.textContent="最近同步 "+qTimeText(qp.prepareLastSyncedAt)+" · 后端最近进展 "+qTimeText(qp.prepareProgress?.updated_at);
+});

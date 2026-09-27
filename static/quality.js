@@ -43,8 +43,8 @@ function qualityReferenceSnapshotMarkup(unit) {
       ? `<ul class="quality-reference-cards">${cards
           .map(
             (card) => `<li>
-              <p>${qualityEscape(card.text || "")}</p>
-              <p class="quality-card-meta">card ${qualityEscape(card.card_id || "")} v${Number(card.card_revision) || 0} · 命中 ${qualityEscape((card.matched_expressions || []).join("、") || "—")}</p>
+              <p data-i18n-ignore="true">${qualityEscape(card.text || "")}</p>
+              <p class="quality-card-meta">card ${qualityEscape(card.card_id || "")} v${Number(card.card_revision) || 0} · 命中 <span data-i18n-ignore="true">${qualityEscape((card.matched_expressions || []).join("、") || "—")}</span></p>
             </li>`
           )
           .join("")}</ul>`
@@ -55,7 +55,7 @@ function qualityReferenceSnapshotMarkup(unit) {
         <p class="quality-card-meta">approved_version=${Number(entry.approved_version) || 0} · card_count=${Number(entry.card_count) || 0} · translation_revision=${Number(entry.translation_revision) || 0}</p>
         ${cardsMarkup}
         ${omittedMarkup}
-        <p class="quality-card-meta">记录于 ${qualityEscape(entry.at || "")}</p>
+        <p class="quality-card-meta">记录于 <span data-i18n-ignore="true">${qualityEscape(entry.at || "")}</span></p>
       </li>`
     );
   }
@@ -122,7 +122,7 @@ async function qualityFetchSuggestions() {
         result.source_sha256 !== unit.source_sha256 ||
         Number(result.translation_revision) !== Number(unit.translation_revision || 0)) throw new Error("表达建议与当前单元版本不一致，请刷新后重试。");
     const suggestions = Array.isArray(result.suggestions) ? result.suggestions : [];
-    $("qualitySuggestList").innerHTML = suggestions.map(item => `<li><strong>${qualityEscape(item.suggested_expression || "")}</strong><p>原文：${qualityEscape(item.source_excerpt || "")}</p><p>已保存译文：${qualityEscape(item.translation_excerpt || "")}</p><p>${qualityEscape(item.reason || "")}</p></li>`).join("");
+    $("qualitySuggestList").innerHTML = suggestions.map(item => `<li><strong data-i18n-ignore="true">${qualityEscape(item.suggested_expression || "")}</strong><p>原文：<span data-i18n-ignore="true">${qualityEscape(item.source_excerpt || "")}</span></p><p>已保存译文：<span data-i18n-ignore="true">${qualityEscape(item.translation_excerpt || "")}</span></p><p data-i18n-ignore="true">${qualityEscape(item.reason || "")}</p></li>`).join("");
     $("qualitySuggestStatus").textContent = suggestions.length ? "仅供参考，不会自动替换译文。" : "本次没有新的表达建议。";
   } catch (error) {
     if (key === qualityWorkbench.suggestionKey) $("qualitySuggestStatus").textContent = `获取失败：${error.message}`;

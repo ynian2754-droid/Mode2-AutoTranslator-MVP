@@ -475,11 +475,33 @@ function applyProjectRender(project) {
   }
   const sourceFile = project.project?.source_file;
   const currentProject = project.current_project || {};
-  const sourceLabel = sourceFile?.name
-    ? `${sourceFile.name} · ${sourceFile.format || "source"}`
-    : "尚未导入源文件";
-  setElementText("projectSource", `${currentProject.name || "当前项目"} · ${sourceLabel}`);
-  setElementText("projectBreadcrumb", currentProject.name || "当前项目");
+  const projectSource = $("projectSource");
+  projectSource.replaceChildren();
+  if (currentProject.name) {
+    const name = document.createElement("span");
+    name.dataset.i18nIgnore = "true";
+    name.textContent = currentProject.name;
+    projectSource.append(name);
+  } else {
+    projectSource.append(document.createTextNode("当前项目"));
+  }
+  projectSource.append(document.createTextNode(" · "));
+  if (sourceFile?.name) {
+    const sourceName = document.createElement("span");
+    sourceName.dataset.i18nIgnore = "true";
+    sourceName.textContent = `${sourceFile.name} · ${sourceFile.format || "source"}`;
+    projectSource.append(sourceName);
+  } else {
+    projectSource.append(document.createTextNode("尚未导入源文件"));
+  }
+  const projectBreadcrumb = $("projectBreadcrumb");
+  if (currentProject.name) {
+    projectBreadcrumb.dataset.i18nIgnore = "true";
+    projectBreadcrumb.textContent = currentProject.name;
+  } else {
+    delete projectBreadcrumb.dataset.i18nIgnore;
+    projectBreadcrumb.textContent = "当前项目";
+  }
   renderUnits(units);
   renderDetail(units.find((unit) => unit.id === ui.selectedUnitId));
   renderEvents(project.events || []);
@@ -733,6 +755,7 @@ function updateUnitCard(card, unit) {
   if (status.className !== nextStatusClass) status.className = nextStatusClass;
   if (status.textContent !== statusText(unit.status)) status.textContent = statusText(unit.status);
   if (preview.textContent !== previewText) preview.textContent = previewText;
+  preview.dataset.i18nIgnore = "true";
   const nextAlertClass = draft?.dirty ? "unit-alert draft-alert" : unit.status === "needs_action" ? "unit-alert" : "";
   if (alert.className !== nextAlertClass) alert.className = nextAlertClass;
   if (alert.textContent !== alertText) alert.textContent = alertText;
@@ -807,7 +830,7 @@ function issueMarkup(issue) {
   const suggestionMarkup = suggestion
     ? `<p class="issue-suggestion"><strong>翻译建议</strong>${escapeHtml(suggestion)}</p>`
     : "";
-  return `<div class="issue-card${warning}"><strong>${escapeHtml(issue.rule || "review")}</strong><p>${escapeHtml(issue.message || "需要人工确认。")}</p>${suggestionMarkup}</div>`;
+  return `<div class="issue-card${warning}"><strong data-i18n-ignore="true">${escapeHtml(issue.rule || "review")}</strong><p data-i18n-ignore="true">${escapeHtml(issue.message || "需要人工确认。")}</p>${suggestionMarkup}</div>`;
 }
 
 // The draft a retranslation is replacing, kept readable while the new result is
@@ -924,10 +947,10 @@ function renderDetail(unit) {
   const issues = unit.review_issues || [];
   const actionBar = unitActionBarMarkup(unit);
   const textColumns = `<div class="text-columns">
-    <div class="text-box"><h3>源文</h3><p>${escapeHtml(unit.source)}</p></div>
+    <div class="text-box"><h3>源文</h3><p data-i18n-ignore="true">${escapeHtml(unit.source)}</p></div>
     <div class="text-box translation-box"><h3>${editable ? "译文（可编辑）" : "译文"}</h3>${editable
       ? `<textarea id="editedTranslation" rows="1" aria-label="编辑译文">${escapeHtml(draft?.value ?? unit.translation ?? "")}</textarea><p id="editorDraftHint" class="editor-draft-hint"></p>`
-      : `<p>${escapeHtml(unit.translation || "等待翻译")}</p>`}</div>
+      : `<p data-i18n-ignore="true">${escapeHtml(unit.translation || "等待翻译")}</p>`}</div>
   </div>`;
   const hashMarker = unit.status === "accepted_risk"
     ? `<span class="inline-state risk">已接受风险</span>`
@@ -963,7 +986,7 @@ function renderDetail(unit) {
     </details>`;
   const repairMarkup = modelRepairMarkup(unit);
   panel.innerHTML = `<div class="panel-heading" data-role="detail-head">${detailHeadInnerMarkup(unit)}</div>
-    <div class="detail-content"><div class="detail-title-row"><div><h2>${escapeHtml(unit.source.slice(0, 80))}${unit.source.length > 80 ? "…" : ""}</h2><div class="hash-line"><span class="hash-label">sha256 · ${escapeHtml(unit.source_sha256)}</span>${hashMarker}</div></div></div>${repairMarkup}${detailBody}${qualityTools}</div>`;
+    <div class="detail-content"><div class="detail-title-row"><div><h2 data-i18n-ignore="true">${escapeHtml(unit.source.slice(0, 80))}${unit.source.length > 80 ? "…" : ""}</h2><div class="hash-line"><span class="hash-label">sha256 · ${escapeHtml(unit.source_sha256)}</span>${hashMarker}</div></div></div>${repairMarkup}${detailBody}${qualityTools}</div>`;
   panel.dataset.detailUnitId = unit.id;
   ui.detailRenderKey = renderKey;
   const textarea = $("editedTranslation");
@@ -1021,7 +1044,7 @@ function refreshDetailChrome(unit) {
 }
 
 function detailHeadInnerMarkup(unit) {
-  return `<div><h2>${escapeHtml(unit.id)} · ${statusText(unit.status)}</h2></div><span class="status-label ${statusClass(unit.status)}">${escapeHtml(unit.translation_model || "待处理")}</span>`;
+  return `<div><h2><span data-i18n-ignore="true">${escapeHtml(unit.id)}</span> · ${statusText(unit.status)}</h2></div><span class="status-label ${statusClass(unit.status)}" data-i18n-ignore="true">${escapeHtml(unit.translation_model || "待处理")}</span>`;
 }
 
 // The status banner alone (empty for statuses that show columns instead). Shared

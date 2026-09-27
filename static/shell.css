@@ -147,18 +147,29 @@ main {
 
 @media (max-width: 800px) {
   .topbar {
-    gap: 20px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "brand status language" "nav nav nav";
+    gap: 10px 12px;
     height: auto;
     min-height: 66px;
-    flex-wrap: wrap;
+    align-items: center;
     padding: 14px 20px;
-    row-gap: 12px;
   }
+  .topbar > .brand { grid-area: brand; min-width: 0; }
+  .topbar > .connection-state { grid-area: status; justify-self: end; margin-left: 0; max-width: 150px; min-width: 0; }
+  .topbar > .connection-state #connectionText { overflow: hidden; text-overflow: ellipsis; }
+  .topbar > .language-switch { grid-area: language; justify-self: end; }
   .app-nav {
-    order: 3;
+    grid-area: nav;
+    order: 0;
     width: 100%;
-    gap: 24px;
+    height: auto;
+    gap: 16px;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
+  .app-nav::-webkit-scrollbar { display: none; }
   .app-nav a {
     padding: 6px 0;
   }
@@ -195,4 +206,6 @@ main {
     gap: 5px 8px;
     font-size: 11px;
   }
+  .topbar { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; padding: 12px 16px; }
+  .app-nav { gap: 12px; }
 }

@@ -1,5 +1,53 @@
 # Mode2 AutoTranslator MVP
 
+[English](#english) | [简体中文](#simplified-chinese)
+
+[Download the latest release](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)
+
+## English
+
+Mode2 AutoTranslator is a local Windows translation workbench. It imports documents, organizes text into translation units, runs independent quality checks, and exports a complete translated document. It connects to user-configured OpenAI-compatible services; no API key or model service is bundled.
+
+### Features
+
+- Import PDF, EPUB, Markdown, and TXT files. Scanned PDFs need OCR before import.
+- Keep source locations and content-integrity information for each unit.
+- Translate units in parallel, run separate quality checks, manage terminology references, edit translations, and review accepted risks.
+- Export Markdown, TXT, EPUB, and PDF.
+- Use the project selector, translation workspace, concept review, and API settings pages in a local browser. The interface supports Simplified Chinese and English; Simplified Chinese is the default, and the language choice is saved in the browser.
+
+### Windows quick start
+
+1. Run `安装依赖.bat`. If Python 3.10 or later is not available, the installer uses the CPython installer included in the repository.
+2. Run `启动.bat`.
+3. Open `http://127.0.0.1:4873/` in your browser and configure your translation and review providers.
+
+You can also run `./run.ps1` in PowerShell. To change the default port, run `启动.bat <port>`.
+
+### User guide
+
+See the [user guide](USER_GUIDE.md) for installation, importing, API setup, translation, review, export, and troubleshooting. The guide is currently in Simplified Chinese.
+
+### Data and API settings
+
+Translation projects are stored locally in `book/`; API settings are stored in `.runtime/api_settings.json`. These paths are excluded from Git. The repository and release package do not include personal projects, API keys, model accounts, or endpoint settings. When you translate or review, selected units and relevant context are sent to the provider you configured; follow that provider's data and billing terms.
+
+### License
+
+The project's original source code and documentation are released under the MIT License; see [LICENSE](LICENSE). The bundled CPython installer and PDF fonts retain their respective upstream licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) and the font license files.
+
+### Limitations
+
+- Supported inputs are PDF, EPUB, Markdown, and TXT. Scanned PDFs require OCR; DOCX is not supported.
+- A working OpenAI-compatible translation and review service is required. Model quality, pricing, rate limits, and availability depend on your provider.
+- First-time installation and PDF export require preparing Python and dependencies as described by the installer.
+
+---
+
+<a id="simplified-chinese"></a>
+
+## 简体中文
+
 Mode2 AutoTranslator 是一款在 Windows 本机运行的翻译工作台，用于导入文档、按单元组织翻译、独立校验并导出完整译文。它通过 OpenAI-compatible 接口调用用户配置的翻译和校验服务，不附带 API Key 或模型服务。
 
 ## 功能
