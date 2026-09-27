@@ -32,7 +32,7 @@ book
 
 | 前置条件 | 说明 |
 | --- | --- |
-| Windows + Python | 安装脚本会检测 Python 3.10+；没有可用 Python 时会调用项目内的 CPython 安装程序。 |
+| Windows + Python | 请先单独安装 Python 3.10+（含 pip）；仓库不附带 Python 安装程序。 |
 | 项目依赖 | 首次运行前双击 `安装依赖.bat`。它会安装 `requirements.txt` 中的 FastAPI、Uvicorn、pypdf、python-multipart 和 ReportLab。 |
 | 可用浏览器和本地端口 | 软件运行在本机浏览器中，默认使用 `127.0.0.1:4873`。如果端口被占用，可以换端口。 |
 | 可写入项目目录 | 程序需要能够写入 `book\项目名`，保存原文件、项目状态、备份和输出文件。 |
@@ -80,7 +80,7 @@ API Key **不一定**是前置条件。有些公开或免费渠道不要求鉴�
 安装依赖.bat
 ```
 
-脚本会先探测项目内环境（`.venv`、项目内 `miniconda3`/`runtime`）、当前 conda 环境、常见 Miniconda 安装路径、PATH 中的 Python 和 `py.exe`。如果找不到可用的 Python 3.10+，它会调用项目内的 `python-3.13.15-amd64.exe`，按当前用户安装到本机应用数据目录，然后在项目内创建 `.venv`。接着脚本使用最终选定的 Python 安装 `requirements.txt`，并验证五个直接依赖模块（fastapi、uvicorn、pypdf、multipart、reportlab）。
+脚本会先探测项目内环境（`.venv`、项目内 `miniconda3`/`runtime`）、当前 conda 环境、常见 Miniconda 安装路径、PATH 中的 Python 和 `py.exe`。如果找不到可用的 Python 3.10+（含 pip），脚本会停止并提示先单独安装 Python；仓库不再附带 Python 安装程序。找到解释器后，脚本使用它安装 `requirements.txt`，并验证五个直接依赖模块（fastapi、uvicorn、pypdf、multipart、reportlab）。
 
 **安装和启动使用同一套解释器选择规则**（`scripts/resolve_python.ps1`，两个脚本共同引用）。规则是：按固定顺序检查候选解释器，**优先选择已经装齐全部五个模块的那个**；如果一个都没有装齐，就退回第一个满足「Python 3.10+ 且带 pip」的解释器，并在启动时明确提示缺少哪些模块。因此机器上同时有 Miniconda 和 python.org 版 Python 时，不会再出现「依赖装到了 A、启动却用了 B」的情况。
 

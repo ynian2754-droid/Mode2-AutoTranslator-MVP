@@ -18,7 +18,7 @@ Mode2 AutoTranslator is a local Windows translation workbench. It imports docume
 
 ### Windows quick start
 
-1. Run `安装依赖.bat`. If Python 3.10 or later is not available, the installer uses the CPython installer included in the repository.
+1. Install Python 3.10 or later with pip, then run `安装依赖.bat`. Python is not bundled with the repository.
 2. Run `启动.bat`.
 3. Open `http://127.0.0.1:4873/` in your browser and configure your translation and review providers.
 
@@ -34,13 +34,13 @@ Translation projects are stored locally in `book/`; API settings are stored in `
 
 ### License
 
-The project's original source code and documentation are released under the MIT License; see [LICENSE](LICENSE). The bundled CPython installer and PDF fonts retain their respective upstream licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) and the font license files.
+The project's original source code and documentation are released under the MIT License; see [LICENSE](LICENSE). The PDF fonts retain their upstream licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) and the font license files.
 
 ### Limitations
 
 - Supported inputs are PDF, EPUB, Markdown, and TXT. Scanned PDFs require OCR; DOCX is not supported.
 - A working OpenAI-compatible translation and review service is required. Model quality, pricing, rate limits, and availability depend on your provider.
-- First-time installation and PDF export require preparing Python and dependencies as described by the installer.
+- First-time setup requires a separately installed Python 3.10+ with pip; the setup script installs the project dependencies.
 
 ---
 
@@ -60,7 +60,7 @@ Mode2 AutoTranslator 是一款在 Windows 本机运行的翻译工作台，用�
 
 ## 快速开始
 
-1. 在 Windows 上运行 `安装依赖.bat`。电脑没有可用的 Python 3.10+ 时，安装脚本会使用仓库内的 CPython 安装程序。
+1. 请先单独安装 Python 3.10+（含 pip），再运行 `安装依赖.bat`。仓库不再附带 Python 安装程序。
 2. 运行 `启动.bat`。
 3. 在浏览器打开 `http://127.0.0.1:4873/`，配置翻译与校验服务后即可开始使用。
 
@@ -90,10 +90,10 @@ scripts/resolve_python.ps1 Python 环境解析
 
 ## 开源许可
 
-本项目自有源码与文档采用 MIT License，见 [LICENSE](LICENSE)。仓库附带的 CPython 安装程序和 PDF 字体沿用各自的上游许可，不包含在项目 MIT 许可范围内；详情见 [第三方组件说明](THIRD_PARTY_NOTICES.md) 和字体目录中的许可文件。
+本项目自有源码与文档采用 MIT License，见 [LICENSE](LICENSE)。PDF 字体沿用各自的上游许可，不包含在项目 MIT 许可范围内；详情见 [第三方组件说明](THIRD_PARTY_NOTICES.md) 和字体目录中的许可文件。
 
 ## 当前限制
 
 - 仅处理 PDF、EPUB、Markdown 和 TXT 输入；扫描 PDF 需要 OCR，DOCX 尚未支持。
 - 需要可用的 OpenAI-compatible 翻译和校验接口；模型质量、价格、限流和可用性由所配置的服务商决定。
-- 首次安装和首次导出 PDF 需要按安装脚本的说明准备 Python 与依赖。
+- 首次运行前需要自行安装 Python 3.10+（含 pip），再运行安装脚本准备依赖；PDF 导出也需要相应依赖。

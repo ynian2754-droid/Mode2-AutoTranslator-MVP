@@ -28,73 +28,9 @@ if ($resolved) {
     }
 }
 
-$bootstrappedRuntime = $false
 if (-not $python) {
-    # The project carries a CPython installer so a clean Windows machine does
-    # not need Miniconda specifically.  Install it per-user, without changing
-    # the system PATH, then make a project-local venv for the existing launcher.
-    $pythonInstaller = Join-Path $PSScriptRoot "python-3.13.15-amd64.exe"
-    if (-not (Test-Path -LiteralPath $pythonInstaller -PathType Leaf)) {
-        Write-Error "No usable Python 3.10+ installation with pip was found, and the bundled CPython installer is missing."
-        exit 2
-    }
-
-    if ($env:LOCALAPPDATA) {
-        $runtimeRoot = Join-Path $env:LOCALAPPDATA "Mode2AutoTranslator\Python313"
-    } else {
-        $runtimeRoot = Join-Path $PSScriptRoot "python-runtime"
-    }
-    $runtimeParent = Split-Path -Parent $runtimeRoot
-    New-Item -ItemType Directory -Force -Path $runtimeParent | Out-Null
-
-    Write-Host ("No usable Python found. Installing the bundled CPython runtime to: {0}" -f $runtimeRoot)
-    $installerArguments = @(
-        "/quiet",
-        "InstallAllUsers=0",
-        ("TargetDir={0}" -f $runtimeRoot),
-        "Include_pip=1",
-        "Include_test=0",
-        "Include_launcher=0",
-        "PrependPath=0"
-    )
-    & $pythonInstaller @installerArguments
-    $installerExitCode = $LASTEXITCODE
-    if ($installerExitCode -ne 0) {
-        Write-Error ("CPython installation failed with exit code {0}." -f $installerExitCode)
-        exit $installerExitCode
-    }
-
-    $python = Join-Path $runtimeRoot "python.exe"
-    if (-not (Test-Mode2PythonUsable $python)) {
-        Write-Error ("The CPython installer completed, but the new interpreter is not usable: {0}" -f $python)
-        exit 2
-    }
-    $bootstrappedRuntime = $true
-}
-
-# The original run.ps1 already prefers .venv.  When this script had to install
-# Python from scratch, create that venv so a later double-click uses the same
-# interpreter without changing PATH or run.ps1.
-if ($bootstrappedRuntime) {
-    $venvRoot = Join-Path $PSScriptRoot ".venv"
-    $venvPython = Join-Path $venvRoot "Scripts\python.exe"
-    if ((Test-Path -LiteralPath $venvRoot) -and (-not (Test-Path -LiteralPath $venvPython))) {
-        Write-Error ("The project .venv directory exists but is incomplete: {0}" -f $venvRoot)
-        exit 2
-    }
-    if (-not (Test-Path -LiteralPath $venvPython)) {
-        Write-Host ("Creating project virtual environment: {0}" -f $venvRoot)
-        & $python -X utf8 -B -m venv $venvRoot
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error ("Creating the project virtual environment failed with exit code {0}." -f $LASTEXITCODE)
-            exit $LASTEXITCODE
-        }
-    }
-    if (-not (Test-Mode2PythonUsable $venvPython)) {
-        Write-Error ("The project virtual environment is not usable: {0}" -f $venvPython)
-        exit 2
-    }
-    $python = (Resolve-Path -LiteralPath $venvPython).Path
+    Write-Error "No usable Python 3.10+ installation with pip was found. Install Python 3.10+ with pip, then rerun 安装依赖.bat."
+    exit 2
 }
 
 $pythonDirectory = Split-Path -Parent $python
@@ -145,8 +81,5 @@ Write-Host "Dependency verification passed."
 
 $reportLabVersion = & $python -X utf8 -B -c "import reportlab; print(reportlab.Version)"
 Write-Host ("ReportLab: {0}" -f $reportLabVersion)
-if ($bootstrappedRuntime) {
-    Write-Host ("Project runtime ready. Future launches will use: {0}" -f $python)
-}
 Write-Host "All project dependencies are ready."
 exit 0
