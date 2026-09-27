@@ -43,6 +43,7 @@ scripts/resolve_python.ps1 Python 环境解析
 ## 开源许可
 
 本项目自有源码与文档采用 MIT License，见 [LICENSE](LICENSE)。仓库附带的 CPython 安装程序和 PDF 字体沿用各自的上游许可，不包含在项目 MIT 许可范围内；详情见 [第三方组件说明](THIRD_PARTY_NOTICES.md) 和字体目录中的许可文件。
+
 ## 当前限制
 
 - 仅处理 PDF、EPUB、Markdown 和 TXT 输入；扫描 PDF 需要 OCR，DOCX 尚未支持。
