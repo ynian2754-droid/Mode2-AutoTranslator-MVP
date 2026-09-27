@@ -9,7 +9,28 @@ function qualityEscape(value) {
     .replaceAll("'", "&#39;");
 }
 
+// Snapshot card text is frozen model input. Translate only the fixed labels
+// supplied by quality_support.py; keep terms, meanings and translations intact.
+function qualityDisplayCardText(value) {
+  const text = String(value || "");
+  if (window.Mode2I18n?.locale !== "en") return text;
+  return text.split("\n").map(line => line
+    .replace(/^来源：程序按有效证据自动采用的参考（非人工批准，人工参考优先）。$/, "Source: automatically adopted from eligible evidence (not manually approved; manual references take priority).")
+    .replace(/^概念：/, "Concept: ")
+    .replace(/^条目：/, "Entry: ")
+    .replace(/→ 统一译名：/g, "→ canonical translation: ")
+    .replace(/ 区别：/g, " Guidance: ")
+    .replace(/ 适用：/g, " Applies when: ")
+    .replace(/^本处含义：/, "Meaning here: ")
+    .replace(/^适用范围：/, "Applicable context: ")
+    .replace(/^统一译名：/, "Canonical translation: ")
+    .replace(/^易混淆：/, "Common confusions: ")
+    .replace(/^待核实：/, "Open questions: ")
+  ).join("\n");
+}
+
 function qualityReferenceSnapshotMarkup(unit) {
+  const en = window.Mode2I18n?.locale === "en";
   const reference = unit && unit.quality_reference;
   if (!reference || typeof reference !== "object") {
     return `<p class="quality-reference-empty">当前单元还没有参考快照。先扫描并批准概念，再触发翻译或重新审校即可生成快照。</p>`;
@@ -17,8 +38,10 @@ function qualityReferenceSnapshotMarkup(unit) {
   const entries = [];
   for (const [kind, entry] of Object.entries(reference)) {
     if (!entry || typeof entry !== "object") continue;
-    const label = kind === "translation" ? "翻译时" : "审校时";
-    const flag = entry.is_new_reference ? "（人工触发的新参考）" : "（自动审校沿用同一参考）";
+    const label = kind === "translation" ? (en ? "At translation time" : "翻译时") : (en ? "At review time" : "审校时");
+    const flag = entry.is_new_reference
+      ? (en ? " (new reference requested manually)" : "（人工触发的新参考）")
+      : kind === "review" ? (en ? " (automatic review reused the same reference)" : "（自动审校沿用同一参考）") : "";
     const snapshot = entry.snapshot && typeof entry.snapshot === "object" ? entry.snapshot : {};
     const cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
     // This snapshot is what the unit really used; cards that matched but did
@@ -29,33 +52,35 @@ function qualityReferenceSnapshotMarkup(unit) {
     const automaticOmittedCount = snapshot.automatic_omitted_count;
     let omittedText;
     if (!Number.isInteger(omittedCount)) {
-      omittedText = "本次省略数量：这张快照没有记录，不做推测。";
+      omittedText = en ? "Omitted card count was not recorded in this snapshot." : "本次省略数量：这张快照没有记录，不做推测。";
     } else if (omittedCount === 0) {
-      omittedText = "本次没有省略卡片。";
+      omittedText = en ? "No cards were omitted this time." : "本次没有省略卡片。";
     } else {
       const automaticPart = Number.isInteger(automaticOmittedCount)
-        ? `（其中自动采用 ${automaticOmittedCount} 张）`
-        : "（自动采用部分未记录）";
-      omittedText = `本次省略 ${omittedCount} 张${automaticPart}：它们命中了这个单元，但没进本次注入——每单元最多 6 张卡／6000 字符，人工参考优先，放不下的整张省略。`;
+        ? (en ? ` (${automaticOmittedCount} automatically adopted)` : `（其中自动采用 ${automaticOmittedCount} 张）`)
+        : (en ? " (automatic adoption count not recorded)" : "（自动采用部分未记录）");
+      omittedText = en
+        ? `${omittedCount} cards omitted${automaticPart}: they matched this unit but exceeded the 6-card/6,000-character per-unit limit. Manual references take priority; cards are omitted whole.`
+        : `本次省略 ${omittedCount} 张${automaticPart}：它们命中了这个单元，但没进本次注入——每单元最多 6 张卡／6000 字符，人工参考优先，放不下的整张省略。`;
     }
     const omittedMarkup = `<p class="quality-card-meta">${qualityEscape(omittedText)}</p>`;
     const cardsMarkup = cards.length
       ? `<ul class="quality-reference-cards">${cards
           .map(
             (card) => `<li>
-              <p data-i18n-ignore="true">${qualityEscape(card.text || "")}</p>
-              <p class="quality-card-meta">card ${qualityEscape(card.card_id || "")} v${Number(card.card_revision) || 0} · 命中 <span data-i18n-ignore="true">${qualityEscape((card.matched_expressions || []).join("、") || "—")}</span></p>
+              <p data-i18n-ignore="true">${qualityEscape(qualityDisplayCardText(card.text))}</p>
+              <p class="quality-card-meta">card ${qualityEscape(card.card_id || "")} v${Number(card.card_revision) || 0} · ${en ? "matched" : "命中"} <span data-i18n-ignore="true">${qualityEscape((card.matched_expressions || []).join("、") || "—")}</span></p>
             </li>`
           )
           .join("")}</ul>`
-      : `<p class="quality-card-meta">本次未注入概念卡（仅含版本记录）</p>`;
+      : `<p class="quality-card-meta">${en ? "No concept cards were injected (version record only)." : "本次未注入概念卡（仅含版本记录）"}</p>`;
     entries.push(
       `<li>
         <strong>${label}${qualityEscape(flag)}</strong>
-        <p class="quality-card-meta">approved_version=${Number(entry.approved_version) || 0} · card_count=${Number(entry.card_count) || 0} · translation_revision=${Number(entry.translation_revision) || 0}</p>
+        <p class="quality-card-meta">${en ? "Approved version" : "批准版本"} ${Number(entry.approved_version) || 0} · ${en ? "Cards used" : "使用卡片"} ${Number(entry.card_count) || 0} · ${en ? "Translation revision" : "译文版本"} ${Number(entry.translation_revision) || 0}</p>
         ${cardsMarkup}
         ${omittedMarkup}
-        <p class="quality-card-meta">记录于 <span data-i18n-ignore="true">${qualityEscape(entry.at || "")}</span></p>
+        <p class="quality-card-meta">${en ? "Recorded" : "记录于"} <span data-i18n-ignore="true">${qualityEscape(entry.at || "")}</span></p>
       </li>`
     );
   }
@@ -134,3 +159,16 @@ async function qualityFetchSuggestions() {
 
 window.qualitySyncEntry = qualitySyncEntry;
 window.qualityAttachUnit = qualityAttachUnit;
+
+window.addEventListener("mode2:localechange", () => {
+  const workbench = document.getElementById("qualityUnitReference");
+  if (workbench && typeof ui !== "undefined") {
+    const unit = ui.project?.units?.find(item => item.id === ui.selectedUnitId);
+    if (unit) workbench.innerHTML = qualityReferenceSnapshotMarkup(unit);
+  }
+  const source = document.getElementById("sourceReference");
+  if (source && typeof qp !== "undefined") {
+    const unit = qp.units?.find(item => item.id === qp.sourceId);
+    if (unit) source.innerHTML = qualityReferenceSnapshotMarkup(unit);
+  }
+});

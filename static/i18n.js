@@ -293,6 +293,24 @@
     "本次不需要生成与检查（全部复用）。": "No generation or review is needed this time (all work is reused).",
     "预览不调用模型；确认后才执行。": "Previewing does not call a model. Work starts only after confirmation.",
     "有效概念（已采用）": "Eligible concepts (adopted)",
+    "单元处理结果": "Unit results",
+    "已返回的单元结果": "Returned unit results",
+    "当前没有跨卡片重复出现的表达。": "No expressions appear on multiple cards.",
+    "编辑解释": "Edit explanation",
+    "只处理当前概念，不自动改写译文。": "This action applies only to this concept and does not rewrite the translation.",
+    "↻ 重新翻译": "↻ Re-translate",
+    "● 未保存修改": "● Unsaved changes",
+    "💾 保存修改": "💾 Save changes",
+    "→ 下一条": "→ Next unit",
+    "独立校验通过。": "Independent review passed.",
+    "独立校验端已接收译文。": "The independent reviewer received the translation.",
+    "翻译结果已通过严格导入，进入独立校验。": "The translation passed strict import and entered independent review.",
+    "翻译端已接收单元。": "The translation provider received the unit.",
+    "概念含义": "Concept meaning",
+    "原文证据": "Source evidence",
+    "待确认问题": "Open questions",
+    "来源批次与影响范围": "Source batch and impact",
+    "本次没有省略卡片。": "No cards were omitted this time.",
     "没有候选": "No candidates",
     "预算口径": "Budget details",
     "详细统计与未采用原因": "Detailed statistics and reasons not adopted",
@@ -814,6 +832,29 @@
   }[status] || status);
 
   const PATTERNS_EXTRA = [
+    [/^本任务范围：(\d+) 个单元$/, (_, n) => `Task scope: ${stageUnit("个单元", n)}`],
+    [/^(\d+) 个失败批次可重试 · 查看并选择$/, (_, n) => `${countLabel(n, "failed batch", "failed batches")} available for retry · review and select`],
+    [/^批量重译并复检 (\d+) 个单元$/, (_, n) => `Re-translate and review ${stageUnit("个单元", n)}`],
+    [/^(\d+) 张$/, (_, n) => countLabel(n, "card", "cards")],
+    [/^(\d+) \/ (\d+) 张$/, (_, a, b) => `${a} of ${b} cards`],
+    [/^(\d+) 个单元$/, (_, n) => stageUnit("个单元", n)],
+    [/^(\d+) 个$/, (_, n) => `${n} units`],
+    [/^AI 已解决疑问：(\d+) 项（涉及 (\d+) 张卡） · 剩余未解决：(\d+) 项$/, (_, questions, cards, unresolved) => `Questions resolved by AI: ${questions} (across ${cards} cards) · ${unresolved} unresolved`],
+    [/^预算口径：(.+)$/, (_, basis) => `Budget details: ${basis}`],
+    [/^(completed|partial|failed|running|interrupted) · 候选 (\d+) · 保存 (\d+)（新增 (\d+)） · 失败 (\d+)$/, (_, state, candidates, saved, added, failed) => `${state[0].toUpperCase()}${state.slice(1)} · ${candidates} candidates · ${saved} saved (${added} new) · ${failed} failed`],
+    [/^最近生成：(.+?) · (.+)$/, (_, file, time) => `Last export: ${file} · ${time}`],
+    [/^· (已通过|待翻译|等待中|翻译中|校验中|用户已修改|待裁决|已接受风险|已停止)$/, (_, status) => `· ${EN[status] || status}`],
+    [/^当前任务集合结束：(\w+)。$/, (_, state) => `Current run finished: ${state}.`],
+    [/^本次范围 (\d+) 个单元$/, (_, n) => `Current scope: ${stageUnit("个单元", n)}`],
+    [/^原文证据 · (\d+) 条$/, (_, n) => `Source evidence · ${countLabel(n, "item", "items")}`],
+    [/^单元覆盖：已覆盖 (\d+) \/ 可覆盖 (\d+)(?: · 未覆盖 (\d+))?(?: · 无候选单元 (\d+))?$/, (_, covered, eligible, missing, noCandidates) => `Unit coverage: ${covered} of ${eligible} eligible${missing ? ` · ${missing} uncovered` : ""}${noCandidates ? ` · ${noCandidates} without candidates` : ""}`],
+    [/^剩余未解决：(\d+) 项$/, (_, n) => `Unresolved: ${countLabel(n, "question", "questions")}`],
+    [/^额外请求预算：(\d+) \/ (\d+) 次(（已用尽；仍有工作未完成，留待下次确认）)?$/, (_, used, limit, exhausted) => `Extra request budget: ${used} of ${limit}${exhausted ? " (exhausted; unfinished work can continue after the next confirmation)" : ""}`],
+    [/^记录请求：生成 (\d+) · 检查 (\d+) · 辨析 (\d+)（不同口径，不相加）$/, (_, generation, review, resolution) => `Recorded requests: generation ${generation} · review ${review} · resolution ${resolution} (different measures; do not add)`],
+    [/^Provider 调用：生成 (\d+|待确定) · 检查 (\d+|待确定) · 辨析 (\d+|待确定)（不是 HTTP 次数）$/, (_, generation, review, resolution) => `Provider calls: generation ${displayTime(generation)} · review ${displayTime(review)} · resolution ${displayTime(resolution)} (not HTTP requests)`],
+    [/^Provider HTTP：(\d+)$/, (_, n) => `Provider HTTP requests: ${n}`],
+    [/^内容修正轮：(\d+)$/, (_, n) => `Content-repair rounds: ${n}`],
+    [/^单元 (\d+) · (.+)$/, (_, n, id) => `Unit ${n} · ${id}`],
     [/^最近同步 (.+) · 后端最近进展 (.+)$/, (_, synced, backend) => `Last synced ${displayTime(synced)} · Latest backend progress ${displayTime(backend)}`],
     [/^任务范围：单元数待确定 · (.+)$/, (_, id) => `Task scope: unit count pending · ${id}`],
     [/^任务范围：([\d,]+) 个单元 · (.+)$/, (_, n, id) => `Task scope: ${stageUnit("个单元", n)} · ${id}`],
@@ -1293,6 +1334,9 @@
   function translate(value) {
     const source = String(value ?? "");
     if (locale !== "en") return source;
+    // Status panels often put several independently translatable lines in one
+    // text node. Keep line breaks and translate each line by the same rules.
+    if (source.includes("\n")) return source.split("\n").map(translate).join("\n");
     const leading = source.match(/^\s*/)?.[0] || "";
     const trailing = source.match(/\s*$/)?.[0] || "";
     const core = source.trim();

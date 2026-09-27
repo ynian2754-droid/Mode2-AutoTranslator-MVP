@@ -908,17 +908,18 @@ function qPrepareCounts() {
 }
 function qBudgetBasisText(basis) {
   if (!basis) return "";
+  const en = window.Mode2I18n?.locale === "en";
   const recheck = basis.recheck || {}, lookup = basis.lookup || {};
   const rlimits = recheck.limits || {}, llimits = lookup.limits || {};
   const fmt = (limits, keys) => keys
     .filter(key => Number(limits[key] || 0) > 0)
-    .map(key => `${Number(limits[key])}${key === "cards" ? " 卡" : key === "units" ? " 源单元" : key === "words" ? " 英文词" : " 字符"}`)
+    .map(key => `${Number(limits[key])}${en ? ({cards:" cards",units:" source units",words:" English words",chars:" characters"}[key]) : (key === "cards" ? " 卡" : key === "units" ? " 源单元" : key === "words" ? " 英文词" : " 字符")}`)
     .join(" / ");
   const parts = [];
   const recheckText = fmt(rlimits, ["cards", "units", "chars"]);
-  if (recheckText) parts.push(`基础重查不占额外预算（单次 ≤${recheckText}，超出记未完成）`);
+  if (recheckText) parts.push(en ? `Baseline recheck uses no extra budget (up to ${recheckText} per request; excess remains unfinished)` : `基础重查不占额外预算（单次 ≤${recheckText}，超出记未完成）`);
   const lookupText = fmt(llimits, ["cards", "units", "words", "chars"]);
-  if (lookupText) parts.push(`一次补查占共享预算 1 格（单次 ≤${lookupText}，先到者为限）`);
+  if (lookupText) parts.push(en ? `One lookup uses one shared budget slot (up to ${lookupText} per request; first limit reached applies)` : `一次补查占共享预算 1 格（单次 ≤${lookupText}，先到者为限）`);
   return parts.length ? parts.join(" · ") : "";
 }
 function qReasonList(rows, keyName) {
@@ -1984,4 +1985,5 @@ document.addEventListener("DOMContentLoaded",qInit);
 window.addEventListener("mode2:localechange",()=>{
   const sync=$("prepareSyncMeta");
   if(sync)sync.textContent="最近同步 "+qTimeText(qp.prepareLastSyncedAt)+" · 后端最近进展 "+qTimeText(qp.prepareProgress?.updated_at);
+  if(qp.prepare || qp.preparePlan)qRenderPrepare();
 });
