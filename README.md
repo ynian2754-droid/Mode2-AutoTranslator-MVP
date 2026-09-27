@@ -6,7 +6,7 @@
 
 [English](#mode2-autotranslator) · [简体中文](#simplified-chinese)
 
-Mode2 turns long documents into traceable units: optionally analyze source concepts, check candidates against evidence, and prepare applicable meaning and terminology references before translating in parallel. A separately configured reviewer checks saved translations; you can edit, recheck, retry, or explicitly accept risk before export. It uses OpenAI-compatible APIs that **you configure**.
+Mode2 breaks long documents into traceable translation units, translates them in parallel, and checks each result with a separately configured reviewer. You can inspect or edit units before export. Optional concept preparation helps keep meaning and terminology consistent across the document. Connect your own OpenAI-compatible APIs.
 
 **中文速览：** 本地导入与切分文档，可先做概念辨析，再并行翻译、独立校验、人工审阅并导出。[查看完整中文说明](#simplified-chinese)。
 
@@ -14,7 +14,11 @@ Mode2 turns long documents into traceable units: optionally analyze source conce
 
 ![A completed translation unit with source text, an editable saved translation, independent review status, and its reference snapshot](docs/images/03-unit-review.png)
 
-*A real Mode2 screen from a synthetic, offline demo project. The saved Chinese translation and review result are demonstration data, not evidence of live-model quality.*
+The workbench keeps source text, an editable translation, review status, and the unit's reference snapshot together.
+
+> **Demo note / 演示说明：** Screenshots use a synthetic offline demo project and illustrate the actual Mode2 workflow and export UI. They are not benchmarks of model translation quality.
+>
+> 截图使用合成内容与离线演示项目，展示真实工作流和导出界面，不代表模型翻译质量基准。
 
 ```mermaid
 flowchart LR
@@ -29,19 +33,19 @@ flowchart LR
 
 ## Screenshots
 
-These are captures from a completed local demo using a synthetic source document and offline sample translation and review responses. They show the actual interface and exported file, **not a live provider evaluation**. [Image notes and provenance](docs/images/README_SCREENSHOTS.md).
+See the [image notes](docs/images/README_SCREENSHOTS.md) for the six captures and their context.
 
 ### Prepare concepts with source evidence
 
 ![A concept card for green buffer showing the source excerpt, meaning, candidate Chinese term, and automatic adoption status](docs/images/04-concept-card.png)
 
-The card keeps a meaning, applicable context, candidate translation, and source evidence together. Its automatic adoption is labeled separately from manual approval; the Chinese term and explanation are saved project content.
+The card shows its meaning, applicable context, candidate translation, source evidence, and automatic adoption status.
 
 ### Export the finished document
 
 ![The PDF exported from the synthetic Coastal Notes demo, showing reflowed Chinese headings and paragraphs](docs/images/05-exported-pdf.png)
 
-This is the actual PDF produced from the completed demo project. The sample text identifies itself as synthetic; the capture illustrates document output, not translation accuracy or source-layout preservation.
+The exported PDF shows the completed document with reflowed Chinese headings and paragraphs.
 
 <details>
 <summary>More views: project library, progress, and concept preparation</summary>
@@ -54,7 +58,7 @@ The workbench overview shows completion status, progress, output format, and the
 
 ![Translation workspace overview showing eight passed units, full progress, and PDF export](docs/images/02-workspace-overview.png)
 
-The preparation view shows three adopted references from the saved demo run. The selected scope shown at the top was changed after that run; stage counters marked “To be determined” are not presented as measured results.
+The preparation view shows three adopted references and the workflow overview.
 
 ![Concept preparation page showing the saved result of three adopted references and workflow status](docs/images/06-concept-preparation.png)
 
@@ -98,7 +102,7 @@ The app does not bundle an API key or model. When you test an endpoint or run tr
 
 - DOCX import and OCR are not included. Convert DOCX first; OCR a scanned PDF before importing it.
 - PDF export is reflowed, not a visual copy of the source. EPUB export does not promise preservation of every image, complex style, or interactive element.
-- Provider compatibility, translation quality, cost, and rate limits depend on the service you configure. The [v0.2.1 Release](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/tag/v0.2.1) reports package checks, but no fresh Windows installation or live model calls; concept preparation has only offline validation so far.
+- Provider compatibility, translation quality, cost, and rate limits depend on the service you configure.
 
 ## Documentation and license
 
@@ -122,10 +126,10 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 
 ### 截图导览
 
-这些是运行中程序的真实界面和实际导出的 PDF，使用合成原文、离线示例译文与校验结果，**不代表真实模型翻译质量**。
+这些图片依次展示单元审阅、概念卡和实际导出的 PDF。
 
 - [单元审阅与人工编辑](docs/images/03-unit-review.png)：同一处查看原文、已保存译文、独立校验状态及参考快照。
-- [概念卡与原文证据](docs/images/04-concept-card.png)：查看 `green buffer` 的含义、候选译名、适用语境和采用状态。卡片中的中文是项目内容。
+- [概念卡与原文证据](docs/images/04-concept-card.png)：查看 `green buffer` 的含义、候选译名、适用语境和采用状态。
 - [导出的 PDF 页面](docs/images/05-exported-pdf.png)：展示完整文档的重排输出，并非源 PDF 版式复刻。
 - [项目列表](docs/images/01-project-library.png)、[工作台总览](docs/images/02-workspace-overview.png)、[概念准备状态](docs/images/06-concept-preparation.png) 展示其余环节。截图来源与限制见[图片说明](docs/images/README_SCREENSHOTS.md)。
 
@@ -146,7 +150,7 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 
 项目、原文件副本、译文、校验记录和导出文件保存在 `book/<项目名>/`；可能含 API Key 的设置保存在 `.runtime/api_settings.json`。这两个目录被 Git 忽略，也不随 v0.2.1 Release ZIP 分发。调用你配置的服务时，所选操作可能发送原文单元或摘录、相邻上下文、已保存译文、概念候选与适用参考；服务方的数据处理和计费规则由其决定。
 
-目前不支持 DOCX 导入或内置 OCR。PDF 导出会重新排版，EPUB 导出也不保证保留所有图片、复杂样式和交互元素。模型兼容性、译文质量、费用与限流取决于所配置的服务；[v0.2.1 Release](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/tag/v0.2.1) 尚无全新 Windows 安装和真实模型调用验证，概念准备目前只有离线验证。
+目前不支持 DOCX 导入或内置 OCR。PDF 导出会重新排版，EPUB 导出也不保证保留所有图片、复杂样式和交互元素。模型兼容性、译文质量、费用与限流取决于所配置的服务。
 
 ### 文档与许可
 
