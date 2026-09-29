@@ -88,13 +88,13 @@ Create a project, import a file, and select the units to process. Concept prepar
 | | Supported formats | Notes |
 | --- | --- | --- |
 | Import | PDF, EPUB, Markdown (`.md`, `.markdown`), TXT | PDF needs a text layer; scanned PDFs require OCR first. |
-| Export | Markdown, TXT, EPUB, PDF | Output is written to the project's `output/` folder; PDF and EPUB are reconstructed documents. |
+| Export | Markdown, TXT, EPUB, PDF, Word (`.docx`) | Output and its trace map are written to the project's `output/` folder. Word is editable and reflows pages; PDF and EPUB are reconstructed documents. |
 
 The app runs in a local browser on Windows. Its project selector, translation workspace, concept page, and settings page support English and Simplified Chinese; Simplified Chinese is the default interface language.
 
 ## Data, providers, and privacy
 
-Projects, source copies, saved translations, reviews, and exports live under `book/<project>/`. API settings, which may include API keys, live in `.runtime/api_settings.json`. Both directories are Git-ignored and are excluded from the v0.2.2 Release ZIP; protect your local settings file and keep credentials out of screenshots and issue reports.
+Projects, source copies, saved translations, reviews, and exports live under `book/<project>/`. API settings, which may include API keys, live in `.runtime/api_settings.json`. Both directories are Git-ignored and excluded from Release ZIPs; protect your local settings file and keep credentials out of screenshots and issue reports.
 
 The app does not bundle an API key or model. When you test an endpoint or run translation, review, or concept preparation, it calls the endpoint you configured. Depending on the action, requests can contain source units or excerpts, adjacent source context, saved translations, candidate concepts, and applicable references. Your provider's access, billing, and data-handling terms apply.
 
@@ -146,11 +146,11 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 | | 格式 | 说明 |
 | --- | --- | --- |
 | 导入 | PDF、EPUB、Markdown、TXT | PDF 需要文本层；扫描件需先 OCR。 |
-| 导出 | Markdown、TXT、EPUB、PDF | 完整文档与追踪映射写入项目的 `output/` 目录。 |
+| 导出 | Markdown、TXT、EPUB、PDF、Word（`.docx`） | 完整文档与追踪映射写入项目的 `output/` 目录；Word 可以继续编辑，页面会重新分页。 |
 
-项目、原文件副本、译文、校验记录和导出文件保存在 `book/<项目名>/`；可能含 API Key 的设置保存在 `.runtime/api_settings.json`。这两个目录被 Git 忽略，也不随 v0.2.2 Release ZIP 分发。调用你配置的服务时，所选操作可能发送原文单元或摘录、相邻上下文、已保存译文、概念候选与适用参考；服务方的数据处理和计费规则由其决定。
+项目、原文件副本、译文、校验记录和导出文件保存在 `book/<项目名>/`；可能含 API Key 的设置保存在 `.runtime/api_settings.json`。这两个目录被 Git 忽略，也不随 Release ZIP 分发。调用你配置的服务时，所选操作可能发送原文单元或摘录、相邻上下文、已保存译文、概念候选与适用参考；服务方的数据处理和计费规则由其决定。
 
-目前不支持 DOCX 导入或内置 OCR。PDF 导出会重新排版，EPUB 导出也不保证保留所有图片、复杂样式和交互元素。模型兼容性、译文质量、费用与限流取决于所配置的服务。
+目前不支持 DOCX 导入或内置 OCR；DOCX 文件请先转换为 PDF、Markdown 或 TXT 后导入。Word 导出采用可编辑的 A4 样式并会重新分页，不保证页码与源 PDF 一致。PDF 导出会重新排版，EPUB 导出也不保证保留所有图片、复杂样式和交互元素。模型兼容性、译文质量、费用与限流取决于所配置的服务。
 
 ### 文档与许可
 

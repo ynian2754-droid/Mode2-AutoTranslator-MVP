@@ -1268,7 +1268,14 @@ async function exportDocument() {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    showToast(`完整译文档已生成：${result.output?.filename || "已开始下载"}`);
+    const formatName = {
+      markdown: "Markdown",
+      text: "TXT",
+      pdf: "PDF",
+      epub: "EPUB",
+      docx: "Word",
+    }[ui.outputFormat] || "完整译文档";
+    showToast(`${formatName} 文档已生成：${result.output?.filename || "已开始下载"}`);
     await refresh();
   } catch (error) {
     showToast(error.message);

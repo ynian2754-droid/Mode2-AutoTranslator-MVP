@@ -15,7 +15,7 @@
 # The probe uses importlib.util.find_spec, so it never executes project code.
 
 $script:Mode2RepoRoot = Split-Path -Parent $PSScriptRoot
-$script:Mode2RequiredModules = @('fastapi', 'uvicorn', 'pypdf', 'multipart', 'reportlab')
+$script:Mode2RequiredModules = @('fastapi', 'uvicorn', 'pypdf', 'multipart', 'reportlab', 'docx')
 
 $script:Mode2ProbeCode = @'
 import importlib.util
@@ -28,7 +28,7 @@ try:
 except Exception:
     raise SystemExit(3)
 
-names = ['fastapi', 'uvicorn', 'pypdf', 'multipart', 'reportlab']
+names = ['fastapi', 'uvicorn', 'pypdf', 'multipart', 'reportlab', 'docx']
 missing = [name for name in names if importlib.util.find_spec(name) is None]
 print(','.join(missing))
 '@

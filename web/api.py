@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from core.api_settings import ApiConfig
+from core.api_settings import ApiGroup, ApiTask, PromptTask
 from core.exceptions import ConflictError, PipelineError
 try:
     from core.segmenter import DEFAULT_TARGET_WORDS, validate_target_words
@@ -17,7 +17,11 @@ except ImportError:  # Backward compatibility until the segmenter API is upgrade
     DEFAULT_TARGET_WORDS = 500
 from providers.api_client import OpenAICompatibleClient, ProviderRequestError
 from web.schemas import (
+    ApiConnectionRequest,
+    ApiPresetChoiceRequest,
+    ApiPresetRequest,
     ApiSettingsRequest,
+    ApiTaskPresetRequest,
     ConcurrencySettingsRequest,
     DecisionRequest,
     EditorialSuggestionRequest,
@@ -28,6 +32,8 @@ from web.schemas import (
     PipelineStartRequest,
     ProjectCreateRequest,
     ProjectRequest,
+    PromptPresetRequest,
+    PromptSelectionRequest,
     QualityBatchRetryRequest,
     QualityCardBatchItem,
     QualityCardBatchRequest,
@@ -44,8 +50,6 @@ from web.schemas import (
     _segmentation_values_match,
 )
 
-
-ApiScope = Literal["inspection", "translation"]
 
 def _settings_values(payload: ApiSettingsRequest) -> dict:
     if hasattr(payload, "model_dump"):
@@ -140,6 +144,7 @@ def create_api_router(manager) -> APIRouter:
             ".md": "text/markdown; charset=utf-8",
             ".pdf": "application/pdf",
             ".epub": "application/epub+zip",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         }.get(path.suffix.casefold(), "application/octet-stream")
         return FileResponse(path, media_type=media_type, filename=path.name)
 
@@ -224,26 +229,95 @@ def create_api_router(manager) -> APIRouter:
         except (OSError, ValueError) as exc:
             raise _error_response(exc) from exc
 
-    @router.put("/settings/{scope}")
-    def update_settings(scope: ApiScope, payload: ApiSettingsRequest) -> dict:
+    @router.post("/settings/presets")
+    def create_api_preset(payload: ApiPresetRequest) -> dict:
         try:
-            config = manager.api_settings.update(scope, _settings_values(payload))
-            return {"scope": scope, "config": config.to_dict()}
-        except ValueError as exc:
+            values = _settings_values(payload)
+            return manager.api_settings.create_preset(values.pop("name"), values)
+        except (OSError, ValueError, PipelineError) as exc:
             raise _error_response(exc) from exc
 
-    @router.post("/settings/{scope}/test")
-    def test_settings(scope: ApiScope, payload: ApiSettingsRequest | None = None) -> dict:
+    @router.put("/settings/presets/{preset_id}")
+    def update_api_preset(preset_id: str, payload: ApiPresetRequest) -> dict:
         try:
-            config = (
-                ApiConfig.from_mapping(_settings_values(payload))
-                if payload is not None
-                else manager.api_settings.get(scope)
-            )
+            values = _settings_values(payload)
+            return manager.api_settings.update_preset(preset_id, values.pop("name"), values)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.delete("/settings/presets/{preset_id}")
+    def delete_api_preset(preset_id: str) -> dict:
+        try:
+            return manager.api_settings.delete_preset(preset_id)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.put("/settings/groups/{group}")
+    def set_api_group(group: ApiGroup, payload: ApiPresetChoiceRequest) -> dict:
+        try:
+            return manager.api_settings.set_group(group, payload.preset_id)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.put("/settings/tasks/{task}")
+    def set_api_task(task: ApiTask, payload: ApiTaskPresetRequest) -> dict:
+        try:
+            return manager.api_settings.set_task(task, payload.preset_id)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.delete("/settings/tasks")
+    def clear_api_tasks() -> dict:
+        try:
+            return manager.api_settings.clear_overrides()
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.post("/settings/apply-all")
+    def apply_api_preset_to_all(payload: ApiPresetChoiceRequest) -> dict:
+        try:
+            return manager.api_settings.apply_to_all(payload.preset_id)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.post("/settings/prompts/{task}")
+    def create_prompt_preset(task: PromptTask, payload: PromptPresetRequest) -> dict:
+        try:
+            return manager.api_settings.create_prompt_preset(task, payload.name, payload.text)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    # The literal "selection" segment must be declared before the
+    # ``{preset_id}`` PUT route so FastAPI does not shadow it.
+    @router.put("/settings/prompts/{task}/selection")
+    def select_prompt_preset(task: PromptTask, payload: PromptSelectionRequest) -> dict:
+        try:
+            return manager.api_settings.select_prompt(task, payload.preset_id)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.put("/settings/prompts/{task}/{preset_id}")
+    def update_prompt_preset(task: PromptTask, preset_id: str, payload: PromptPresetRequest) -> dict:
+        try:
+            return manager.api_settings.update_prompt_preset(task, preset_id, payload.name, payload.text)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.delete("/settings/prompts/{task}/{preset_id}")
+    def delete_prompt_preset(task: PromptTask, preset_id: str) -> dict:
+        try:
+            return manager.api_settings.delete_prompt_preset(task, preset_id)
+        except (OSError, ValueError, PipelineError) as exc:
+            raise _error_response(exc) from exc
+
+    @router.post("/settings/test")
+    def test_settings(payload: ApiConnectionRequest) -> dict:
+        try:
+            values = _settings_values(payload)
+            config = manager.api_settings.request_config(values, values.pop("preset_id", None))
             usage = OpenAICompatibleClient(config).test_connection()
             return {
                 "status": "ok",
-                "scope": scope,
                 "model": config.model,
                 "message": "API 连接成功。",
                 "usage": usage,
@@ -252,21 +326,18 @@ def create_api_router(manager) -> APIRouter:
             status = 400 if isinstance(exc, ValueError) else 502
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
-    @router.post("/settings/{scope}/models")
-    def list_models(scope: ApiScope, payload: ApiSettingsRequest | None = None) -> dict:
+    @router.post("/settings/models")
+    def list_models(payload: ApiConnectionRequest) -> dict:
         try:
-            if payload is None:
-                config = manager.api_settings.get(scope)
-            else:
-                values = _settings_values(payload)
-                # `/models` does not use a model ID.  Keep the normal model
-                # requirement for save/test/translation, but allow discovery
-                # before the user knows which model names the gateway exposes.
-                if not str(values.get("model") or "").strip():
-                    values["model"] = "model-list-placeholder"
-                config = ApiConfig.from_mapping(values)
+            values = _settings_values(payload)
+            # `/models` does not use a model ID.  Keep the normal model
+            # requirement for save/test/translation, but allow discovery
+            # before the user knows which model names the gateway exposes.
+            if not str(values.get("model") or "").strip():
+                values["model"] = "model-list-placeholder"
+            config = manager.api_settings.request_config(values, values.pop("preset_id", None))
             models = OpenAICompatibleClient(config).list_models()
-            return {"status": "ok", "scope": scope, "models": models}
+            return {"status": "ok", "models": models}
         except (ValueError, ProviderRequestError) as exc:
             status = 400 if isinstance(exc, ValueError) else 502
             raise HTTPException(status_code=status, detail=str(exc)) from exc

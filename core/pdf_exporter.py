@@ -12,6 +12,7 @@ from unicodedata import east_asian_width
 
 from .assembler import DocumentAssembler
 from .exceptions import PipelineError
+from .epub_layout import build_epub_layout, source_toc_level, split_translated_paragraphs
 from .pdf_fonts import PdfFontChain, PdfFontError, load_pdf_font, load_pdf_fonts
 from .pdf_glyph_support import (
     apply_equivalents,
@@ -42,6 +43,7 @@ _FALLBACK_ASCII_REPLACEMENTS = {
     "\u201c": '"',
     "\u201d": '"',
 }
+PdfLine = tuple[str, float, float, bool | str]
 
 
 class PdfExportError(PipelineError):
@@ -147,7 +149,7 @@ class PdfExporter:
 
     def _render_pdf(
         self,
-        lines: list[tuple[str, float, float, bool]],
+        lines: list[PdfLine],
         title: str,
         *,
         fonts: PdfFontChain | None = None,
@@ -162,7 +164,7 @@ class PdfExporter:
             except PdfFontError as exc:
                 raise PdfExportError(str(exc)) from exc
 
-        for text, _size, _indent, _is_heading in lines:
+        for text, _size, _indent, _line_style in lines:
             if text != "\f":
                 try:
                     fonts.validate_text(text)
@@ -178,8 +180,11 @@ class PdfExporter:
             pages = self._paginate(lines, fonts.char_width)
             for page_index, page_lines in enumerate(pages, 1):
                 y = self.PAGE_HEIGHT - self.MARGIN_TOP
-                for text, size, indent, _is_heading in page_lines:
+                for text, size, indent, line_style in page_lines:
                     cursor_x = self.MARGIN_X + indent
+                    if line_style == "center" and text:
+                        line_width = sum(fonts.char_width(char, size) for char in text)
+                        cursor_x = max(0.0, (self.PAGE_WIDTH - line_width) / 2.0)
                     if text:
                         # One text object per line, switching the font between
                         # runs inside it.  A line covered by the primary font
@@ -211,7 +216,7 @@ class PdfExporter:
         except PdfFontError as exc:
             raise PdfExportError(str(exc)) from exc
 
-    def _render_pdf_fallback(self, lines: list[tuple[str, float, float, bool]], title: str) -> bytes:
+    def _render_pdf_fallback(self, lines: list[PdfLine], title: str) -> bytes:
         """Build the pre-portability PDF for diagnostics only; never public export."""
 
         objects = _PdfObjects()
@@ -238,12 +243,16 @@ class PdfExporter:
         for page_lines in pages:
             commands: list[str] = []
             y = self.PAGE_HEIGHT - self.MARGIN_TOP
-            for text, size, indent, _is_heading in page_lines:
+            for text, size, indent, line_style in page_lines:
+                cursor_x = self.MARGIN_X + indent
+                if line_style == "center" and text:
+                    line_width = sum(self._fallback_char_width(char, size) for char in text)
+                    cursor_x = max(0.0, (self.PAGE_WIDTH - line_width) / 2.0)
                 commands.extend(
                     self._fallback_text_commands(
                         text,
                         size,
-                        self.MARGIN_X + indent,
+                        cursor_x,
                         y,
                     )
                 )
@@ -272,16 +281,72 @@ class PdfExporter:
         nodes: list[dict[str, Any]],
         replacements: list[dict[str, str]] | None = None,
         renderable: Any | None = None,
-    ) -> list[tuple[str, float, float, bool]]:
-        result: list[tuple[str, float, float, bool]] = []
-        for node in self._legacy_layout_nodes(nodes):
+    ) -> list[PdfLine]:
+        result: list[PdfLine] = []
+
+        def emit(
+            text: str,
+            size: float,
+            indent: float = 0.0,
+            line_style: bool | str = False,
+        ) -> None:
+            result.append((text, size, indent, line_style))
+
+        is_epub = any(
+            isinstance(node.get("attributes"), dict)
+            and (
+                node["attributes"].get("chapter_file")
+                or node["attributes"].get("structure_type")
+            )
+            for node in nodes
+        )
+        layout_roles = build_epub_layout(nodes).roles if is_epub else {}
+        display_nodes = self._legacy_layout_nodes(nodes)
+        previous_chapter_file = ""
+        for node in display_nodes:
             separator = str(node.get("separator_before") or "")
-            metadata = node.get("attributes") or {}
+            metadata = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+            node_id = str(node.get("id") or "")
+            node_type = node.get("type")
+            role = layout_roles.get(node_id, "")
+            chapter_file = str(metadata.get("chapter_file") or "")
             if result and metadata.get("page_break_before"):
-                result.append(("\f", 0.0, 0.0, False))
+                emit("\f", 0.0)
+            elif (
+                result
+                and is_epub
+                and chapter_file
+                and previous_chapter_file
+                and chapter_file != previous_chapter_file
+                and (role in {"title", "frontmatter", "contents"} or node_type == "heading")
+            ):
+                # Keep source front-matter pages and headings at their own
+                # reading boundaries. Paragraph-only continuation files do
+                # not cause a page break.
+                emit("\f", 0.0)
             elif result and separator:
-                result.append(("", 10.0, 0.0, False))
+                emit("", 10.0)
+            if (
+                is_epub
+                and chapter_file
+                and chapter_file != previous_chapter_file
+                and "copyright" in chapter_file.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+            ):
+                # The source copyright page starts well below the top edge.
+                emit("", 55.0)
+            previous_chapter_file = chapter_file or previous_chapter_file
             text = str(node.get("translated_text") or "")
+
+            if is_epub and role in {"contents", "contents-running"}:
+                if node_type == "heading":
+                    emit(self._plain_text(text), 14.0, line_style="center")
+                    emit("", 8.0)
+                else:
+                    for entry in split_translated_paragraphs(node):
+                        indent = 14.0 if source_toc_level(entry) == 2 else 0.0
+                        emit(self._plain_text(entry), 10.5, indent)
+                continue
+
             if metadata.get("contents_entry"):
                 page_label = str(metadata.get("toc_page_label") or "")
                 text = self._plain_text(text)
@@ -294,28 +359,34 @@ class PdfExporter:
                     ).rstrip()
                     text = f"{text}    {page_label}"
                 indent = 0.0 if int(metadata.get("toc_level") or 0) == 0 else 12.0
-                result.append((text, 10.5 if indent else 11.0, indent, False))
+                emit(text, 10.5 if indent else 11.0, indent)
                 continue
             if metadata.get("page_number") and result:
-                result.append(("\f", 0.0, 0.0, False))
-                result.append((f"[PDF Page {metadata['page_number']} ]".replace(" ]", "]"), 9.0, 0.0, False))
-            node_type = node.get("type")
+                emit("\f", 0.0)
+                emit(f"[PDF Page {metadata['page_number']} ]".replace(" ]", "]"), 9.0)
             if node_type == "heading":
                 level = max(1, min(6, int(metadata.get("level") or 1)))
                 text = re.sub(r"^\s*#{1,6}\s+", "", text)
                 text = re.sub(r"\s*\n\s*", " ", text)
-                result.append((self._plain_text(text), max(11.0, 19.0 - level * 1.5), 0.0, True))
-                result.append(("", 8.0, 0.0, False))
+                centered = is_epub and (
+                    role == "chapter" or self._epub_source_centered(metadata)
+                )
+                emit(
+                    self._plain_text(text),
+                    max(11.0, 19.0 - level * 1.5),
+                    line_style="center" if centered else True,
+                )
+                emit("", 8.0)
                 continue
             if node_type == "list":
                 for line in text.splitlines():
                     item = re.sub(r"^\s*(?:[-+*]|\d+[.)])\s+", "", line)
                     if item.strip():
-                        result.append(("- " + self._plain_text(item), 11.0, 12.0, False))
+                        emit("- " + self._plain_text(item), 11.0, 12.0)
                 continue
             if node_type == "blockquote":
                 for line in text.splitlines():
-                    result.append(("| " + self._plain_text(re.sub(r"^\s*>\s?", "", line)), 10.5, 12.0, False))
+                    emit("| " + self._plain_text(re.sub(r"^\s*>\s?", "", line)), 10.5, 12.0)
                 continue
             if node_type == "code":
                 code_lines = text.splitlines()
@@ -323,32 +394,74 @@ class PdfExporter:
                     code_lines = code_lines[1:]
                 if code_lines and re.match(r"^\s*(?:```+|~~~+)\s*$", code_lines[-1]):
                     code_lines = code_lines[:-1]
-                result.extend((line, 9.0, 12.0, False) for line in code_lines)
+                for line in code_lines:
+                    emit(line, 9.0, 12.0)
                 continue
             if node_type == "table":
                 for line in text.splitlines():
                     if all(re.fullmatch(r"\s*\|?\s*:?-{3,}:?\s*\|?\s*", part) for part in line.split("|")):
                         continue
-                    result.append((self._plain_text(line), 10.0, 0.0, False))
-                result.append(("", 6.0, 0.0, False))
+                    emit(self._plain_text(line), 10.0)
+                emit("", 6.0)
                 continue
-            result.extend((self._plain_text(line), 11.0, 0.0, False) for line in text.splitlines() or [""])
+            if is_epub:
+                paragraphs = split_translated_paragraphs(node)
+                structure_type = str(metadata.get("structure_type") or "").casefold()
+                class_tokens = {
+                    str(value).casefold()
+                    for value in metadata.get("class_tokens") or []
+                }
+                footnote = structure_type in {"footnote", "endnote"} or any(
+                    value == "footnote" or value.startswith(("footnote-", "endnote"))
+                    for value in class_tokens
+                )
+                centered = self._epub_source_centered(metadata)
+                size = 9.0 if footnote else 9.5 if centered and "copyright" in " ".join(class_tokens) else 11.0
+                indent = 14.0 if footnote else 0.0
+                for paragraph_index, paragraph in enumerate(paragraphs):
+                    lines = paragraph.splitlines() or [""]
+                    for line in lines:
+                        emit(
+                            self._plain_text(line),
+                            size,
+                            indent,
+                            "center" if centered else False,
+                        )
+                    if paragraph_index + 1 < len(paragraphs):
+                        emit("", 4.0 if footnote else 6.0)
+            else:
+                for line in text.splitlines() or [""]:
+                    emit(self._plain_text(line), 11.0)
         if replacements is None:
             return result
         # Apply the reviewed equivalences here, before measurement and wrapping,
         # so line widths use the character that will actually be drawn.
-        converted: list[tuple[str, float, float, bool]] = []
-        for line_text, size, indent, is_heading in result:
+        converted: list[PdfLine] = []
+        for line_text, size, indent, line_style in result:
             if not line_text:
-                converted.append((line_text, size, indent, is_heading))
+                converted.append((line_text, size, indent, line_style))
                 continue
             # Characters the fonts can draw are kept exactly as written; the
             # reviewed equivalences only cover what is still unrenderable.
             new_text, records = apply_equivalents(line_text, renderable=renderable)
             if records:
                 replacements.extend(records)
-            converted.append((new_text, size, indent, is_heading))
+            converted.append((new_text, size, indent, line_style))
         return converted
+
+    @staticmethod
+    def _epub_source_centered(metadata: dict[str, Any]) -> bool:
+        tokens = {
+            str(value).strip().casefold()
+            for value in metadata.get("class_tokens") or []
+        }
+        filename = str(metadata.get("chapter_file") or "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        return (
+            any(token.startswith("center") for token in tokens)
+            or bool(tokens.intersection({"author", "dedication", "half-title", "book-title"}))
+            or "copyright" in filename
+            or any("copyright" in token for token in tokens)
+        )
 
     @classmethod
     def _legacy_layout_nodes(cls, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -363,7 +476,12 @@ class PdfExporter:
 
         if not nodes or any(
             isinstance(node.get("attributes"), dict)
-            and (node["attributes"].get("layout_role") or node["attributes"].get("contents_entry"))
+            and (
+                node["attributes"].get("layout_role")
+                or node["attributes"].get("contents_entry")
+                or node["attributes"].get("chapter_file")
+                or node["attributes"].get("structure_type")
+            )
             for node in nodes
         ):
             return nodes
@@ -517,14 +635,14 @@ class PdfExporter:
 
     def _paginate(
         self,
-        lines: list[tuple[str, float, float, bool]],
+        lines: list[PdfLine],
         char_width: Any | None = None,
-    ) -> list[list[tuple[str, float, float, bool]]]:
+    ) -> list[list[PdfLine]]:
         measure = char_width or self._fallback_char_width
-        pages: list[list[tuple[str, float, float, bool]]] = [[]]
+        pages: list[list[PdfLine]] = [[]]
         y = self.PAGE_HEIGHT - self.MARGIN_TOP
         max_width = self.PAGE_WIDTH - 2 * self.MARGIN_X
-        for text, size, indent, is_heading in lines:
+        for text, size, indent, line_style in lines:
             if text == "\f":
                 if pages[-1]:
                     pages.append([])
@@ -539,7 +657,7 @@ class PdfExporter:
                 if pages[-1] and y - line_height < self.MARGIN_BOTTOM:
                     pages.append([])
                     y = self.PAGE_HEIGHT - self.MARGIN_TOP
-                pages[-1].append((line, size, indent, is_heading))
+                pages[-1].append((line, size, indent, line_style))
                 y -= line_height
         return pages or [[]]
 

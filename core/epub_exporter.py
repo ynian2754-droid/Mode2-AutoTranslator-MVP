@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from .assembler import DocumentAssembler
-from .epub_layout import EpubLayout, NavigationEntry, build_epub_layout
+from .epub_layout import (
+    EpubLayout,
+    NavigationEntry,
+    build_epub_layout,
+    source_toc_level,
+    split_translated_paragraphs,
+)
 from .exceptions import PipelineError
 from .utils import now_iso
 
@@ -139,6 +145,12 @@ h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.4em 0 0.6em; }
 h1.front-title { text-align: center; font-size: 1.65em; line-height: 1.2; margin: 1.1em 0 0.7em; }
 h1.chapter-fragment, h2.chapter-fragment { font-size: 1.1em; line-height: 1.25; margin: 0.15em 0 0.45em; }
 .frontmatter { margin: 0 0 1em; }
+.source-centered { text-align: center; }
+.source-title { font-size: 1.55em; line-height: 1.2; margin: 1.1em 0 0.7em; }
+body.copyright-page { padding-top: 7em; }
+.source-block-group > p { margin: 0 0 0.75em; }
+.footnote-group { margin-top: 1.2em; font-size: 0.88em; line-height: 1.45; }
+.footnote { margin: 0 0 0.45em; padding-left: 1.35em; text-indent: -1.35em; }
 .contents-title { margin-top: 0.8em; }
 .contents-running { font-size: 0.9em; font-weight: normal; text-align: center; margin: 1.2em 0 0.35em; }
 .contents-block { margin: 0.15em 0 0.45em; }
@@ -166,6 +178,12 @@ th, td { border: 1px solid #999; padding: 0.35em; vertical-align: top; }
             archive.writestr("OEBPS/styles.css", css)
             archive.writestr("OEBPS/trace-map.json", json.dumps(trace, ensure_ascii=False, indent=2))
             for path, chapter in zip(chapter_files, chapters):
+                copyright_page = any(
+                    "copyright" in str((node.get("attributes") or {}).get("chapter_file") or "")
+                    .replace("\\", "/").rsplit("/", 1)[-1].casefold()
+                    for node in chapter
+                )
+                body_class = ' class="copyright-page"' if copyright_page else ""
                 body = "\n".join(
                     self._node_markup(
                         node,
@@ -176,7 +194,7 @@ th, td { border: 1px solid #999; padding: 0.35em; vertical-align: top; }
                 xhtml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="{html.escape(language)}">
   <head><title>{html.escape(title)}</title><link rel="stylesheet" type="text/css" href="../styles.css"/></head>
-  <body>{body}</body>
+  <body{body_class}>{body}</body>
 </html>
 """
                 archive.writestr(f"OEBPS/{path}", xhtml)
@@ -193,21 +211,24 @@ th, td { border: 1px solid #999; padding: 0.35em; vertical-align: top; }
         text = str(node.get("translated_text") or "")
         node_type = node.get("type")
         metadata = node.get("attributes") or {}
+        source_classes = self._source_style_classes(node)
         if role in {"contents", "contents-running"}:
             return self._contents_markup(node, attrs, text, role=role)
         if node_type == "heading":
             level = max(1, min(6, int(metadata.get("level") or 1)))
             text = re.sub(r"^\s*#{1,6}\s+", "", text)
-            class_name = (
+            classes = [
                 "front-title"
-                if role == "title"
+                if role == "title" or "source-title" in source_classes
                 else "chapter-heading"
                 if role == "chapter"
                 else "chapter-fragment"
                 if role == "chapter-fragment"
                 else ""
-            )
-            class_attr = f' class="{class_name}"' if class_name else ""
+            ]
+            classes.extend(source_classes)
+            classes = list(dict.fromkeys(value for value in classes if value))
+            class_attr = f' class="{" ".join(classes)}"' if classes else ""
             return f"<h{level}{class_attr} {attrs}>{self._inline_markup(text)}</h{level}>"
         if node_type == "list":
             ordered = bool(metadata.get("ordered"))
@@ -243,9 +264,56 @@ th, td { border: 1px solid #999; padding: 0.35em; vertical-align: top; }
             classes = []
         if role == "frontmatter":
             classes.append("frontmatter")
-        if classes:
-            attrs += f' class="{" ".join(classes)}"'
-        return f"<p {attrs}>{self._multiline_markup(text.splitlines())}</p>"
+        classes.extend(source_classes)
+        classes = list(dict.fromkeys(classes))
+        paragraphs = split_translated_paragraphs(node)
+        if len(paragraphs) > 1:
+            wrapper_classes = [value for value in classes if value != "footnote"]
+            if "footnote" in source_classes:
+                wrapper_classes.append("footnote-group")
+            wrapper_classes = list(dict.fromkeys([*wrapper_classes, "source-block-group"]))
+            wrapper_attrs = f'{attrs} class="{" ".join(wrapper_classes)}"'
+            paragraph_classes = [
+                value for value in source_classes if value in {"footnote"}
+            ]
+            paragraph_class_attr = (
+                f' class="{" ".join(paragraph_classes)}"' if paragraph_classes else ""
+            )
+            children = "".join(
+                f"<p{paragraph_class_attr}>{self._multiline_markup(paragraph.splitlines())}</p>"
+                for paragraph in paragraphs
+            )
+            return f"<div {wrapper_attrs}>{children}</div>"
+        class_attr = f' class="{" ".join(classes)}"' if classes else ""
+        return f"<p {attrs}{class_attr}>{self._multiline_markup(text.splitlines())}</p>"
+
+    @staticmethod
+    def _source_style_classes(node: dict[str, Any]) -> list[str]:
+        metadata = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+        tokens = {
+            str(value).strip().casefold()
+            for value in metadata.get("class_tokens") or []
+            if str(value).strip()
+        }
+        chapter_file = str(metadata.get("chapter_file") or "").replace("\\", "/")
+        filename = chapter_file.rsplit("/", 1)[-1].casefold()
+        structure_type = str(metadata.get("structure_type") or "").casefold()
+        classes: list[str] = []
+        if structure_type in {"footnote", "endnote"} or any(
+            token == "footnote" or token.startswith(("footnote-", "endnote"))
+            for token in tokens
+        ):
+            classes.append("footnote")
+        if (
+            any(token.startswith("center") for token in tokens)
+            or tokens.intersection({"author", "dedication", "half-title"})
+            or "copyright" in filename
+            or any("copyright" in token for token in tokens)
+        ):
+            classes.append("source-centered")
+        if "book-title" in tokens:
+            classes.append("source-title")
+        return list(dict.fromkeys(classes))
 
     def _contents_markup(
         self,
@@ -255,8 +323,21 @@ th, td { border: 1px solid #999; padding: 0.35em; vertical-align: top; }
         *,
         role: str = "contents",
     ) -> str:
-        entries = self._contents_entries(text)
         is_contents_header = self._plain_text(text).strip() in {"CONTENTS", "目录"}
+        metadata = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+        if str(metadata.get("structure_type") or "").casefold() == "toc_entry":
+            rows = []
+            for entry in split_translated_paragraphs(node):
+                label = entry.strip()
+                if not label:
+                    continue
+                level = source_toc_level(label)
+                rows.append(
+                    f'<div class="contents-entry contents-level-{level}">'
+                    f'<span class="contents-label">{self._multiline_markup(label.splitlines())}</span></div>'
+                )
+            return f'<div class="contents-block" {attrs}>{"".join(rows)}</div>'
+        entries = self._contents_entries(text)
         if node.get("type") == "heading" and (not entries or is_contents_header):
             heading_class = "contents-running" if role == "contents-running" else "contents-title"
             heading_level = "h2" if role == "contents-running" else "h1"

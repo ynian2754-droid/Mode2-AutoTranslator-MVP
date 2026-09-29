@@ -31,7 +31,7 @@ def _segmentation_values_match(left: Any, right: Any) -> bool:
         return left == right
 
 
-OutputFormat = Literal["markdown", "text", "pdf", "epub"]
+OutputFormat = Literal["markdown", "text", "pdf", "epub", "docx"]
 
 
 class ProjectRequest(BaseModel):
@@ -82,12 +82,44 @@ class ApiSettingsRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_output_tokens: int = Field(default=2000, ge=1, le=1_000_000)
     timeout_seconds: float = Field(default=90, ge=1, le=600)
-    oc_go_compatibility: bool = False
-    opencode_session_id: str = Field(default="", max_length=128)
+
+
+class ApiConnectionRequest(ApiSettingsRequest):
+    """Editor values for a connection test or model list; ``preset_id`` lets
+    the server apply that preset's saved OC Go contract."""
+
+    preset_id: str | None = Field(default=None, max_length=64)
+
+
+class ApiPresetRequest(ApiSettingsRequest):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class ApiPresetChoiceRequest(BaseModel):
+    preset_id: str = Field(min_length=1, max_length=64)
+
+
+class ApiTaskPresetRequest(BaseModel):
+    """``preset_id`` null means the task follows its group again."""
+
+    preset_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class OcGoCompatibilityRequest(BaseModel):
     enabled: bool = True
+
+
+class PromptPresetRequest(BaseModel):
+    """Name + full system-prompt text of one editable prompt preset."""
+
+    name: str = Field(min_length=1, max_length=40)
+    text: str = Field(min_length=1, max_length=200_000)
+
+
+class PromptSelectionRequest(BaseModel):
+    """``"default"`` selects the read-only built-in prompt."""
+
+    preset_id: str = Field(min_length=1, max_length=64)
 
 
 class SegmentationSettingsRequest(BaseModel):

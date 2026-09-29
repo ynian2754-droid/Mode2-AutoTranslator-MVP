@@ -22,7 +22,7 @@ BASE_URL = "http://127.0.0.1:4873"
 def client_with_manager(base_url: str = BASE_URL) -> tuple[TestClient, MagicMock]:
     manager = MagicMock()
     manager.list_projects.return_value = []
-    manager.api_settings.snapshot.return_value = {"translation": {}, "inspection": {}}
+    manager.api_settings.snapshot.return_value = {"presets": [], "groups": {}, "overrides": {}}
     manager.snapshot.return_value = {"project": {"id": "demo"}, "units": []}
     manager.stop.return_value = {"status": "ok"}
     manager.start.return_value = {"status": "ok"}
@@ -33,7 +33,7 @@ def client_with_manager(base_url: str = BASE_URL) -> tuple[TestClient, MagicMock
     manager.quality_prepare.return_value = {"status": "ok"}
     manager.scan_quality_batch.return_value = {"status": "ok"}
     manager.decide.return_value = {"status": "ok"}
-    manager.api_settings.update.return_value.to_dict.return_value = {"model": "demo"}
+    manager.api_settings.set_group.return_value = {"presets": [], "groups": {}, "overrides": {}}
     return TestClient(create_app(manager), base_url=base_url), manager
 
 
@@ -56,7 +56,8 @@ class SessionProtectionTests(unittest.TestCase):
         for route in routes:
             path = route.path.format(
                 project_id="demo", unit_id="unit-001", card_id="card-001",
-                batch_id="batch-001", scope="translation",
+                batch_id="batch-001", preset_id="p-demo", group="translation",
+                task="unit_translation",
             )
             method = next(iter(route.methods.intersection({"POST", "PUT", "PATCH", "DELETE"})))
             manager.reset_mock()
@@ -85,7 +86,7 @@ class SessionProtectionTests(unittest.TestCase):
             ("POST", "/api/projects", {"name": "demo"}, manager.create_named_project),
             ("POST", "/api/projects/demo/select", None, manager.select_project),
             ("DELETE", "/api/projects/demo", None, manager.delete_project),
-            ("PUT", "/api/settings/translation", {"model": "demo"}, manager.api_settings.update),
+            ("PUT", "/api/settings/groups/translation", {"preset_id": "demo"}, manager.api_settings.set_group),
             ("POST", "/api/project/quality-support/prepare", {
                 "phase": "plan", "expected_project_id": "demo", "expected_revision": 0,
             }, manager.quality_prepare),
@@ -183,8 +184,8 @@ class SessionProtectionTests(unittest.TestCase):
             token = token_for(client)
             headers = {"X-Mode2-Token": token}
             self.assertEqual(client.post("/api/projects", json={"name": "demo"}, headers=headers).status_code, 200)
-            self.assertEqual(client.put("/api/settings/translation", json={
-                "base_url": "http://127.0.0.1:9999/v1", "api_key": "sample-key", "model": "demo",
+            self.assertEqual(client.post("/api/settings/presets", json={
+                "name": "demo", "base_url": "http://127.0.0.1:9999/v1", "api_key": "sample-key", "model": "demo",
             }, headers=headers).status_code, 200)
             self.assertNotIn(token, json.dumps(client.get("/api/project").json()))
             self.assertNotIn(token, json.dumps(client.get("/api/settings").json()))

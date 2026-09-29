@@ -106,6 +106,8 @@ def generate_output_locked(
     output_format: str | None,
     *,
     assembly_error: type[BaseException],
+    docx_export_error: type[BaseException],
+    docx_exporter: type[Any],
     epub_export_error: type[BaseException],
     pdf_export_error: type[BaseException],
     epub_exporter: type[Any],
@@ -117,6 +119,8 @@ def generate_output_locked(
     try:
         if output_format in {"markdown", "text"}:
             metadata = manager.assembler.export(manager.state, output_format=output_format)
+        elif output_format == "docx":
+            metadata = docx_exporter(manager.runtime_dir).export(manager.state)
         elif output_format == "epub":
             metadata = epub_exporter(manager.runtime_dir).export(manager.state)
         elif output_format == "pdf":
@@ -125,7 +129,7 @@ def generate_output_locked(
             raise PipelineError(f"不支持的输出格式：{output_format}")
     except assembly_error:
         raise
-    except (epub_export_error, pdf_export_error):
+    except (docx_export_error, epub_export_error, pdf_export_error):
         raise
     artifacts = manager.state.setdefault("output", {}).setdefault("artifacts", {})
     artifacts[output_format] = copy.deepcopy(metadata)

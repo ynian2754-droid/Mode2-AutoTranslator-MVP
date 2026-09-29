@@ -26,5 +26,6 @@ project\ plan/
 归档/
 
 # Standalone preview artifacts
+preview/
 pelican-bike.html
 pelican-bike-preview.png

@@ -404,7 +404,7 @@ class OpenAICompatibleTranslationProvider(_OpenAICompatible):
     name = "openai-compatible"
 
     def translate(self, request: TranslationRequest) -> TranslationResult:
-        system = TRANSLATION_SYSTEM_PROMPT
+        system = request.system_prompt or TRANSLATION_SYSTEM_PROMPT
         user = _build_translation_user_message(request)
         control: RepairControl | None = getattr(request, "control", None)
         invocation_id = str(getattr(control, "invocation_id", "") or "")
@@ -611,7 +611,7 @@ class OpenAICompatibleReviewProvider(_OpenAICompatible):
             ) from exc
 
     def review(self, request: ReviewRequest) -> ReviewResult:
-        system = REVIEW_SYSTEM_PROMPT
+        system = request.system_prompt or REVIEW_SYSTEM_PROMPT
         user = _build_review_user_message(request)
         control: RepairControl | None = getattr(request, "control", None)
         invocation_id = str(getattr(control, "invocation_id", "") or "")

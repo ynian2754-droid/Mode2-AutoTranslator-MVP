@@ -17,6 +17,9 @@ class TranslationRequest:
     source_language: str
     target_language: str
     context: dict[str, Any] = field(default_factory=dict)
+    # Frozen at request-build time so in-flight work keeps the prompt it
+    # started with; empty means the provider's built-in default.
+    system_prompt: str = ""
     # Optional, request-local execution hook (cancel/staleness check + progress
     # notifications).  Never serialized, never part of ``context``, and ``None``
     # for callers that do not need the bounded content-repair loop.
@@ -45,6 +48,9 @@ class ReviewRequest:
     source_language: str
     target_language: str
     context: dict[str, Any] = field(default_factory=dict)
+    # Frozen at request-build time so in-flight work keeps the prompt it
+    # started with; empty means the provider's built-in default.
+    system_prompt: str = ""
     control: "RepairControl | None" = None
 
 

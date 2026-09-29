@@ -6,10 +6,10 @@
   <title>翻译工作台 · Mode2 AutoTranslator</title>
   <link rel="stylesheet" href="/static/styles.css?v=20260927-english-ui-r3">
   <link rel="stylesheet" href="/static/shell.css?v=20260927-english-ui-r1">
-  <script src="/static/i18n.js?v=20260927-bilingual-r13" defer></script>
+  <script src="/static/i18n.js?v=20260929-nav-settings" defer></script>
   <script src="/static/session.js?v=20260927-session-r1" defer></script>
   <script src="/static/quality.js?v=20260927-english-ui-r3" defer></script>
-  <script src="/static/app.js?v=20260927-session-r1" defer></script>
+  <script src="/static/app.js?v=20260928-docx-r1" defer></script>
 </head>
 <body class="workbench-page">
   <div class="app-shell">
@@ -21,7 +21,7 @@
       <nav class="app-nav" aria-label="工作区导航">
         <a id="workbenchNavLink" class="active" aria-current="page" href="/editor">翻译工作台</a>
         <a id="qualityEntryLink" href="/quality">概念辨析</a>
-        <a href="/settings">API 设置</a>
+        <a href="/settings">设置</a>
       </nav>
       <span class="connection-state" role="status">
         <span id="connectionDot" class="status-dot"></span>
@@ -61,6 +61,7 @@
               <option value="text">TXT</option>
               <option value="pdf">PDF</option>
               <option value="epub">EPUB</option>
+              <option value="docx">Word (.docx)</option>
             </select>
             <button id="exportButton" class="button success" disabled>输出完整文档</button>
             <span id="outputStatusText" class="output-status-text" aria-live="polite">正在检查输出状态</span>

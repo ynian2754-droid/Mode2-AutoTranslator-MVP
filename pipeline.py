@@ -21,6 +21,7 @@ from core.api_settings import ApiSettingsStore
 from core.assembler import AssemblyError, DocumentAssembler
 from core import concept_automation
 from core.document_model import empty_document
+from core.docx_exporter import DocxExportError, DocxExporter
 from core.epub_exporter import EpubExportError, EpubExporter
 from core.exceptions import ConflictError, PipelineError
 from core.quality_support import (
@@ -136,7 +137,7 @@ EDITABLE_TRANSLATION_STATUSES = {"needs_action", "passed", "user_modified", "acc
 # version.
 REVIEWABLE_TRANSLATION_STATUSES = {"needs_action", "passed", "user_modified"}
 CANCELLABLE_START_STATUSES = {"pending", "cancelled"}
-OUTPUT_FORMATS = ("markdown", "text", "pdf", "epub")
+OUTPUT_FORMATS = ("markdown", "text", "pdf", "epub", "docx")
 STOP_GRACE_SECONDS = 5.0
 _UNSET = object()
 
@@ -798,6 +799,8 @@ class PipelineManager:
                 self,
                 output_format,
                 assembly_error=AssemblyError,
+                docx_export_error=DocxExportError,
+                docx_exporter=DocxExporter,
                 epub_export_error=EpubExportError,
                 pdf_export_error=PdfExportError,
                 epub_exporter=EpubExporter,
@@ -1189,10 +1192,10 @@ class PipelineManager:
         if self.translation_provider is not None or self.review_provider is not None:
             if provider_name == "openai-compatible":
                 default_translation = OpenAICompatibleTranslationProvider(
-                    config=self.api_settings.get("translation")
+                    config=self.api_settings.config_for_task("unit_translation")
                 )
                 default_review = OpenAICompatibleReviewProvider(
-                    config=self.api_settings.get("inspection")
+                    config=self.api_settings.config_for_task("unit_review")
                 )
             else:
                 default_translation = DemoTranslationProvider()
@@ -1203,8 +1206,8 @@ class PipelineManager:
             )
         if provider_name == "openai-compatible":
             return (
-                OpenAICompatibleTranslationProvider(config=self.api_settings.get("translation")),
-                OpenAICompatibleReviewProvider(config=self.api_settings.get("inspection")),
+                OpenAICompatibleTranslationProvider(config=self.api_settings.config_for_task("unit_translation")),
+                OpenAICompatibleReviewProvider(config=self.api_settings.config_for_task("unit_review")),
             )
         return DemoTranslationProvider(), DemoReviewProvider()
 
@@ -1787,6 +1790,10 @@ class PipelineManager:
             source_language=self.state["config"]["source_language"],
             target_language=self.state["config"]["target_language"],
             context=context,
+            # Resolved under the pipeline lock when the request is built, so
+            # this attempt keeps its prompt even if the selection changes
+            # while the model call runs.
+            system_prompt=self.api_settings.prompt_for_task("unit_translation"),
         )
         return request, snapshot
 
@@ -1853,6 +1860,7 @@ class PipelineManager:
             source_language=self.state["config"]["source_language"],
             target_language=self.state["config"]["target_language"],
             context=context,
+            system_prompt=self.api_settings.prompt_for_task("unit_review"),
         )
 
     def _validate_translation_result(self, unit: dict[str, Any], result: TranslationResult) -> None:
@@ -3044,8 +3052,8 @@ class PipelineManager:
         The group-resolution channel is its own slot on purpose: the check
         provider protocol has no ``resolve_group``, so borrowing the check object
         only ever worked with the offline double. Both real and injected
-        providers are returned here, and the resolution channel reuses the
-        project's inspection configuration (no new API settings).
+        providers are returned here. Each channel resolves its own task preset
+        (task choice first, otherwise its group's preset).
         """
 
         injected = (
@@ -3062,10 +3070,10 @@ class PipelineManager:
             fake = FakeQualityProvider()
             return tuple(provider if provider is not None else fake for provider in injected)
         return (
-            OpenAICompatibleConceptGenerationProvider(config=self.api_settings.get("translation")),
-            OpenAICompatibleConceptCheckProvider(config=self.api_settings.get("inspection")),
-            OpenAICompatibleEditorialSuggestionProvider(config=self.api_settings.get("translation")),
-            OpenAICompatibleConceptResolutionProvider(config=self.api_settings.get("inspection")),
+            OpenAICompatibleConceptGenerationProvider(config=self.api_settings.config_for_task("concept_generation")),
+            OpenAICompatibleConceptCheckProvider(config=self.api_settings.config_for_task("concept_check")),
+            OpenAICompatibleEditorialSuggestionProvider(config=self.api_settings.config_for_task("expression")),
+            OpenAICompatibleConceptResolutionProvider(config=self.api_settings.config_for_task("concept_disambiguation")),
         )
 
     def _quality_commit_locked(

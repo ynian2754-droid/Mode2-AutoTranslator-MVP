@@ -59,6 +59,46 @@ class EpubLayout:
         return {entry.node_id: entry for entry in self.navigation}
 
 
+def split_translated_paragraphs(node: dict[str, Any]) -> list[str]:
+    """Return translated paragraphs only when saved block counts prove the split.
+
+    Segmenting an EPUB can combine adjacent source paragraphs into one Unit.
+    This export-only view restores their visual separation when the translated
+    text still contains exactly the expected blank-line boundaries. Ambiguous
+    translations stay intact.
+    """
+
+    text = str(node.get("translated_text") or "")
+    attributes = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+    source_range = attributes.get("source_block_range")
+    if not isinstance(source_range, dict):
+        return [text]
+    try:
+        expected_count = int(source_range.get("count") or 0)
+        source_start = int(source_range.get("start"))
+        source_end = int(source_range.get("end"))
+    except (TypeError, ValueError):
+        return [text]
+    if (
+        expected_count <= 1
+        or source_start <= 0
+        or source_end < source_start
+        or source_end - source_start + 1 != expected_count
+        or not text.strip()
+    ):
+        return [text]
+    parts = re.split(r"(?:\r?\n[ \t]*){2,}", text.strip())
+    if len(parts) == expected_count and all(part.strip() for part in parts):
+        return parts
+    return [text]
+
+
+def source_toc_level(value: str) -> int:
+    """Classify a source EPUB contents label without treating its number as a page."""
+
+    return 2 if re.match(r"^\s*\d+\s+\S", value) else 1
+
+
 def parse_contents_entries(value: str) -> list[tuple[str, str]]:
     """Split a contents line into ``(label, printed_page)`` pairs.
 
@@ -139,6 +179,22 @@ def build_epub_layout(nodes: Sequence[dict[str, Any]]) -> EpubLayout:
     major_indices: set[int] = set()
     seen_major_keys: set[str] = set()
     for index, item in enumerate(items):
+        if index:
+            previous_file = _chapter_file(items[index - 1])
+            current_file = _chapter_file(item)
+            if (
+                current_file
+                and previous_file
+                and current_file != previous_file
+                and (
+                    item.get("type") == "heading"
+                    or (contents_start is not None and index <= contents_start)
+                )
+            ):
+                # Source EPUB files preserve useful front-matter and heading
+                # boundaries. A file change alone does not split a running
+                # body paragraph or a continuation file.
+                boundaries.add(index)
         if index in contents_range:
             continue
         if _is_major_start(
@@ -339,16 +395,36 @@ def _find_contents_start(nodes: Sequence[dict[str, Any]]) -> int | None:
 def _find_contents_end(nodes: Sequence[dict[str, Any]], start: int | None) -> int | None:
     if start is None:
         return None
+    start_file = _chapter_file(nodes[start])
+    saw_semantic_entry = False
     for index in range(start + 1, len(nodes)):
-        if nodes[index].get("type") != "heading":
+        item = nodes[index]
+        current_file = _chapter_file(item)
+        if start_file and current_file and current_file != start_file:
+            return index - 1
+        attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        structure_type = str(attributes.get("structure_type") or "").strip().lower()
+        if structure_type in {"toc", "toc_entry", "contents", "contents_entry"}:
+            saw_semantic_entry = True
             continue
-        value = _normalise(_display_text(nodes[index]))
+        if saw_semantic_entry and structure_type:
+            return index - 1
+        if item.get("type") != "heading":
+            continue
+        value = _normalise(_display_text(item))
         if value in {"PREFACE", "前言"}:
             return index - 1
         # A fallback for books whose preface label is not available.
         if index > start and value in {"INTRODUCTION", "引言"}:
             return index - 1
+        if saw_semantic_entry:
+            return index - 1
     return len(nodes) - 1
+
+
+def _chapter_file(item: dict[str, Any]) -> str:
+    attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+    return str(attributes.get("chapter_file") or "").strip()
 
 
 def _contents_major_prefixes(nodes: Sequence[dict[str, Any]], contents: set[int]) -> set[str]:

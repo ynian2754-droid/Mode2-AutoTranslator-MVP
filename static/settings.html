@@ -5,12 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>API 设置 · Mode2 AutoTranslator</title>
   <link rel="stylesheet" href="/static/styles.css?v=20260927-english-ui-r3">
-  <link rel="stylesheet" href="/static/settings.css?v=4">
-  <script src="/static/i18n.js?v=20260927-bilingual-r13" defer></script>
+  <link rel="stylesheet" href="/static/settings.css?v=7-prompts">
+  <script src="/static/i18n.js?v=20260929-nav-settings" defer></script>
   <script src="/static/session.js?v=20260927-session-r1" defer></script>
-  <script src="/static/settings.js?v=20260927-session-r1" defer></script>
+  <script src="/static/settings-i18n.js?v=20260929-prompts" defer></script>
+  <script src="/static/settings.js?v=20260929-prompts" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#settingsMain" data-i18n-ignore="true" data-api-i18n="skip">跳到主要内容</a>
   <div class="app-shell">
     <header class="topbar">
       <div class="brand-lockup">
@@ -28,148 +30,278 @@
       </div>
     </header>
 
-    <main class="settings-main">
-      <div class="section-heading settings-heading">
-        <div>
-          <p class="eyebrow">API CONFIGURATION</p>
-          <h1>API 设置</h1>
-        </div>
-        <span id="pageStatus" class="settings-page-status" role="status"></span>
-      </div>
-
-      <section class="segmentation-card panel" aria-label="翻译单元目标长度设置">
-        <div class="segmentation-heading">
-          <div>
-            <p class="eyebrow">TEXT SEGMENTATION</p>
-            <h2>翻译单元目标长度</h2>
-            <p class="segmentation-help">控制当前项目中 Python 切分程序希望接近的英文词数。它不是硬上限：程序优先保留完整句子，并会在相邻句子边界中选择更接近目标的位置；标题、列表和没有可靠句界的文本可能较短或采用安全回退。</p>
+    <main id="settingsMain" class="settings-main" tabindex="-1">
+      <!-- API presets and task assignment (texts from settings-i18n.js) -->
+      <section id="viewMain" class="api-view" aria-labelledby="mainTitle">
+        <div class="api-page-head" data-i18n-ignore="true">
+          <div class="api-page-title">
+            <h1 id="mainTitle" tabindex="-1" data-api-i18n="main.title">API 设置</h1>
+            <p class="api-lead" data-api-i18n="main.lead">先建立可复用的 API 预设，再为四组工作分别选择使用哪个预设。</p>
           </div>
-          <span id="segmentationProject" class="scope-state">未加载</span>
-        </div>
-        <form id="segmentationForm" class="segmentation-form">
-          <label class="field"><span>目标英文词数</span><input id="targetSegmentWords" type="number" min="1" max="100000" step="1" required></label>
-          <button class="button primary" type="submit">保存切分设置</button>
-        </form>
-        <div class="segmentation-resegment">
-          <div>
-            <strong>重新切分当前项目</strong>
-            <p>会从本项目保存的原始文件重新导入，并清除当前译文、校验结果和导出文件。执行前会自动保留一份项目状态备份。</p>
-          </div>
-          <button id="resegmentSourceButton" class="button secondary" type="button">按当前目标重新切分</button>
-        </div>
-        <p id="segmentationResult" class="settings-result" role="status"></p>
-      </section>
-
-      <section class="segmentation-card panel context-settings-card" aria-label="翻译上下文设置">
-        <div class="segmentation-heading">
-          <div>
-            <p class="eyebrow">TRANSLATION CONTEXT</p>
-            <h2>翻译前后文参考范围</h2>
-            <p class="segmentation-help">翻译当前单元时，模型可以参考相邻原文来判断人物、指代、语气和术语。前后文只用于理解，不会作为需要输出的正文；词数是目标值，程序优先保持完整句子。设置为 0 可关闭对应方向。</p>
-          </div>
-          <span id="translationContextProject" class="scope-state">未加载</span>
-        </div>
-        <form id="translationContextForm" class="segmentation-form">
-          <label class="field"><span>前文参考词数</span><input id="previousContextWords" type="number" min="0" max="4000" step="1" required></label>
-          <label class="field"><span>后文参考词数</span><input id="nextContextWords" type="number" min="0" max="4000" step="1" required></label>
-          <button class="button primary" type="submit">保存上下文设置</button>
-        </form>
-        <p id="translationContextResult" class="settings-result" role="status"></p>
-      </section>
-
-      <section class="oc-go-card panel" aria-label="OpenCode Go 套餐适配">
-        <div>
-          <p class="eyebrow">OPENCODE GO</p>
-          <h2>OC Go 套餐适配</h2>
-          <p class="segmentation-help">启用后，检验和翻译请求会使用专用 Agent 标识，并发送稳定的 <code>x-opencode-session</code> 会话 ID。不会改动 Base URL、API Key 或 Model。</p>
-          <p id="ocGoResult" class="settings-result" role="status"></p>
-        </div>
-        <div class="oc-go-actions">
-          <span id="ocGoState" class="scope-state">未加载</span>
-          <button id="ocGoToggleButton" class="button primary" type="button" disabled>启用 OC Go 适配</button>
-        </div>
-      </section>
-
-      <section class="settings-grid" aria-label="独立 API 配置">
-        <article class="settings-card panel" data-scope="inspection">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">INSPECTION API</p>
-              <h2>检验 API</h2>
+          <form id="globalForm" class="global-apply" novalidate>
+            <label for="globalPreset" data-api-i18n="global.label">统一使用一个预设</label>
+            <div class="global-row">
+              <select id="globalPreset" data-fk="global-select"></select>
+              <button class="button secondary" type="submit" data-fk="global-apply" data-api-i18n="global.apply">应用到全部</button>
             </div>
-            <span class="scope-state" data-state="inspection">未加载</span>
-          </div>
-          <form class="settings-form" data-form="inspection">
-            <input data-field="oc_go_compatibility" type="hidden" value="false">
-            <input data-field="opencode_session_id" type="hidden" value="">
-            <label class="field"><span>API Base URL</span><input data-field="base_url" type="url" required autocomplete="url"></label>
-            <label class="field"><span>API Key（可留空）</span><input data-field="api_key" type="password" autocomplete="new-password" placeholder="无鉴权接口可留空"></label>
-            <div class="field">
-              <span>Model（拉取时可留空）</span>
-              <div class="model-control">
-                <div class="model-input-row">
-                  <input data-field="model" type="text" required>
-                  <button class="button secondary" type="button" data-action="models" data-scope="inspection">拉取模型</button>
-                </div>
-                <select class="model-list" data-model-list="inspection" aria-label="选择检验 API 模型" hidden>
-                  <option value="">选择已拉取的模型</option>
-                </select>
+          </form>
+        </div>
+
+        <div id="apiLoadError" class="api-load-error" role="alert" data-i18n-ignore="true" hidden>
+          <p id="apiLoadErrorText"></p>
+          <button id="apiReload" class="button secondary" type="button" data-api-i18n="load.retry">重新加载</button>
+        </div>
+
+        <div id="apiContent" class="api-content" data-i18n-ignore="true" hidden>
+          <section class="api-block" aria-labelledby="groupsTitle">
+            <div class="api-block-head">
+              <h2 id="groupsTitle" data-api-i18n="groups.title">任务分配</h2>
+              <p data-api-i18n="groups.help">每组选择一个预设。组内任务默认跟随分组；需要时可在高级设置中为单项任务另选。</p>
+            </div>
+            <div id="groupGrid" class="group-grid"></div>
+            <a class="advanced-entry" href="#advanced" id="advancedEntry" data-fk="advanced-entry">
+              <span class="advanced-entry-text">
+                <strong data-api-i18n="advanced.entry">高级设置：按任务单独选择预设</strong>
+                <span id="advancedEntryMeta"></span>
+              </span>
+              <span class="advanced-entry-cta" data-api-i18n="advanced.open">打开高级设置</span>
+            </a>
+          </section>
+
+          <section class="api-block" aria-labelledby="presetsTitle">
+            <div class="api-block-head api-block-head-row">
+              <div>
+                <h2 id="presetsTitle" data-api-i18n="presets.title">API 预设</h2>
+                <p data-api-i18n="presets.help">地址、Key 与完整参数只在预设中维护。修改预设后，所有引用它的分组和任务立即使用新内容。</p>
+              </div>
+              <div class="api-block-actions">
+                <button id="presetsToggle" class="button secondary disclosure" type="button" aria-expanded="false" aria-controls="presetList" data-fk="presets-toggle"></button>
+                <button id="createPreset" class="button primary" type="button" data-fk="create-preset" data-api-i18n="presets.create">新建预设</button>
               </div>
             </div>
-            <label class="field"><span>思考强度 / Reasoning Effort</span><input data-field="reasoning_effort" type="text" placeholder="留空表示不发送"></label>
-            <div class="settings-fields-row">
-              <label class="field"><span>Temperature</span><input data-field="temperature" type="number" min="0" max="2" step="0.1" required></label>
-              <label class="field"><span>最大输出 Token</span><input data-field="max_output_tokens" type="number" min="1" max="1000000" step="1" required></label>
-            </div>
-            <label class="field"><span>请求超时（秒）</span><input data-field="timeout_seconds" type="number" min="1" max="600" step="1" required></label>
-            <div class="settings-actions">
-              <button class="button secondary" type="button" data-action="test" data-scope="inspection">测试检验 API</button>
-              <button class="button primary" type="submit">保存检验配置</button>
-            </div>
-            <p class="settings-result" data-result="inspection" role="status"></p>
-          </form>
-        </article>
+            <ul id="presetSummary" class="preset-summary"></ul>
+            <ul id="presetList" class="preset-list" hidden></ul>
+          </section>
 
-        <article class="settings-card panel" data-scope="translation">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">TRANSLATION API</p>
-              <h2>翻译 API</h2>
-            </div>
-            <span class="scope-state" data-state="translation">未加载</span>
-          </div>
-          <form class="settings-form" data-form="translation">
-            <input data-field="oc_go_compatibility" type="hidden" value="false">
-            <input data-field="opencode_session_id" type="hidden" value="">
-            <label class="field"><span>API Base URL</span><input data-field="base_url" type="url" required autocomplete="url"></label>
-            <label class="field"><span>API Key（可留空）</span><input data-field="api_key" type="password" autocomplete="new-password" placeholder="无鉴权接口可留空"></label>
-            <div class="field">
-              <span>Model（拉取时可留空）</span>
-              <div class="model-control">
-                <div class="model-input-row">
-                  <input data-field="model" type="text" required>
-                  <button class="button secondary" type="button" data-action="models" data-scope="translation">拉取模型</button>
-                </div>
-                <select class="model-list" data-model-list="translation" aria-label="选择翻译 API 模型" hidden>
-                  <option value="">选择已拉取的模型</option>
-                </select>
+          <section class="api-block" aria-labelledby="promptsTitle">
+            <div class="api-block-head api-block-head-row">
+              <div>
+                <h2 id="promptsTitle" data-api-i18n="prompts.title">系统提示词</h2>
+                <p data-api-i18n="prompts.help">首次翻译与重新翻译共用「单元翻译」提示词；自动校验与人工复检共用「单元校验」提示词。其余工作沿用内置提示词。</p>
+              </div>
+              <div class="api-block-actions">
+                <a class="button secondary" href="#prompts" data-fk="prompts-open" data-api-i18n="prompts.open">管理提示词</a>
               </div>
             </div>
-            <label class="field"><span>思考强度 / Reasoning Effort</span><input data-field="reasoning_effort" type="text" placeholder="留空表示不发送"></label>
-            <div class="settings-fields-row">
-              <label class="field"><span>Temperature</span><input data-field="temperature" type="number" min="0" max="2" step="0.1" required></label>
-              <label class="field"><span>最大输出 Token</span><input data-field="max_output_tokens" type="number" min="1" max="1000000" step="1" required></label>
+            <ul id="promptSummary" class="prompt-summary"></ul>
+          </section>
+        </div>
+
+        <h2 class="other-settings-title" data-i18n-ignore="true" data-api-i18n="other.title">其他设置</h2>
+
+        <section class="oc-go-card panel" aria-labelledby="ocGoTitle" data-i18n-ignore="true">
+          <div>
+            <h2 id="ocGoTitle" data-api-i18n="ocgo.title">OC Go 套餐适配</h2>
+            <p class="segmentation-help" id="ocGoHelp"></p>
+            <p id="ocGoResult" class="settings-result" role="status"></p>
+          </div>
+          <div class="oc-go-actions">
+            <span id="ocGoState" class="scope-state"></span>
+            <button id="ocGoToggleButton" class="button primary" type="button" disabled></button>
+          </div>
+        </section>
+
+        <section class="segmentation-card panel" aria-label="翻译单元目标长度设置">
+          <div class="segmentation-heading">
+            <div>
+              <p class="eyebrow">TEXT SEGMENTATION</p>
+              <h2>翻译单元目标长度</h2>
+              <p class="segmentation-help">控制当前项目中 Python 切分程序希望接近的英文词数。它不是硬上限：程序优先保留完整句子，并会在相邻句子边界中选择更接近目标的位置；标题、列表和没有可靠句界的文本可能较短或采用安全回退。</p>
             </div>
-            <label class="field"><span>请求超时（秒）</span><input data-field="timeout_seconds" type="number" min="1" max="600" step="1" required></label>
-            <div class="settings-actions">
-              <button class="button secondary" type="button" data-action="test" data-scope="translation">测试翻译 API</button>
-              <button class="button primary" type="submit">保存翻译配置</button>
-            </div>
-            <p class="settings-result" data-result="translation" role="status"></p>
+            <span id="segmentationProject" class="scope-state">未加载</span>
+          </div>
+          <form id="segmentationForm" class="segmentation-form">
+            <label class="field"><span>目标英文词数</span><input id="targetSegmentWords" type="number" min="1" max="100000" step="1" required></label>
+            <button class="button primary" type="submit">保存切分设置</button>
           </form>
-        </article>
+          <div class="segmentation-resegment">
+            <div>
+              <strong>重新切分当前项目</strong>
+              <p>会从本项目保存的原始文件重新导入，并清除当前译文、校验结果和导出文件。执行前会自动保留一份项目状态备份。</p>
+            </div>
+            <button id="resegmentSourceButton" class="button secondary" type="button">按当前目标重新切分</button>
+          </div>
+          <p id="segmentationResult" class="settings-result" role="status"></p>
+        </section>
+
+        <section class="segmentation-card panel context-settings-card" aria-label="翻译上下文设置">
+          <div class="segmentation-heading">
+            <div>
+              <p class="eyebrow">TRANSLATION CONTEXT</p>
+              <h2>翻译前后文参考范围</h2>
+              <p class="segmentation-help">翻译当前单元时，模型可以参考相邻原文来判断人物、指代、语气和术语。前后文只用于理解，不会作为需要输出的正文；词数是目标值，程序优先保持完整句子。设置为 0 可关闭对应方向。</p>
+            </div>
+            <span id="translationContextProject" class="scope-state">未加载</span>
+          </div>
+          <form id="translationContextForm" class="segmentation-form">
+            <label class="field"><span>前文参考词数</span><input id="previousContextWords" type="number" min="0" max="4000" step="1" required></label>
+            <label class="field"><span>后文参考词数</span><input id="nextContextWords" type="number" min="0" max="4000" step="1" required></label>
+            <button class="button primary" type="submit">保存上下文设置</button>
+          </form>
+          <p id="translationContextResult" class="settings-result" role="status"></p>
+        </section>
+      </section>
+
+      <!-- Advanced: one preset choice per task -->
+      <section id="viewAdvanced" class="api-view" aria-labelledby="advancedTitle" data-i18n-ignore="true" hidden>
+        <a class="back-link" href="#" id="backLink" data-fk="back-link" data-api-i18n="advanced.back">返回 API 设置</a>
+        <div class="api-page-head">
+          <div class="api-page-title">
+            <h1 id="advancedTitle" tabindex="-1" data-api-i18n="advanced.title">高级设置</h1>
+            <p class="api-lead" data-api-i18n="advanced.lead">为六项任务分别选择预设。规则只有两层：任务单独选择优先；否则跟随所属分组。</p>
+          </div>
+          <button id="resetOverrides" class="button secondary" type="button" data-fk="reset-overrides" data-api-i18n="advanced.resetAll">全部恢复跟随分组</button>
+        </div>
+        <div id="advancedGroups" class="advanced-groups"></div>
+        <section class="retry-note" aria-labelledby="retryTitle">
+          <h2 id="retryTitle" data-api-i18n="retry.title">失败批次重试</h2>
+          <ul id="retryList"></ul>
+          <p data-api-i18n="retry.foot">重试沿用对应任务的预设，不新增预设分类。</p>
+        </section>
+      </section>
+
+      <!-- System prompts: one read-only builtin plus editable presets per task -->
+      <section id="viewPrompts" class="api-view" aria-labelledby="promptsViewTitle" data-i18n-ignore="true" hidden>
+        <a class="back-link" href="#" id="promptsBack" data-fk="prompts-back" data-api-i18n="prompts.back">返回设置</a>
+        <div class="api-page-head">
+          <div class="api-page-title">
+            <h1 id="promptsViewTitle" tabindex="-1" data-api-i18n="prompts.viewTitle">系统提示词</h1>
+            <p class="api-lead" data-api-i18n="prompts.viewLead">为「单元翻译」和「单元校验」各选择一套系统提示词。内置默认提示词只读，可复制为自定义预设后修改。新选择只影响之后发起的请求。</p>
+          </div>
+        </div>
+        <div id="promptGroups" class="prompt-groups"></div>
+        <p class="prompts-note" data-api-i18n="prompts.foot">原文、译文、术语和前后文等请求内容仍由程序拼装，不在提示词中维护。概念生成、概念检查、概念辨析与表达建议使用各自的内置提示词，不可修改。</p>
       </section>
     </main>
   </div>
+
+  <div id="apiToast" class="toast" role="status" aria-live="polite" data-i18n-ignore="true"></div>
+
+  <dialog id="editorDialog" class="api-dialog api-dialog-wide" aria-labelledby="editorTitle" data-i18n-ignore="true">
+    <form id="editorForm" novalidate>
+      <header class="api-dialog-head">
+        <h2 id="editorTitle"></h2>
+        <p id="editorUsage" class="api-dialog-sub"></p>
+      </header>
+      <div class="api-dialog-body editor-grid">
+        <div class="field span-2">
+          <label for="fName" data-api-i18n="f.name">预设名称</label>
+          <input id="fName" name="name" type="text" maxlength="40" autocomplete="off" required>
+          <p class="field-error" id="eName"></p>
+        </div>
+        <div class="field span-2">
+          <label for="fBase">API Base URL</label>
+          <input id="fBase" name="base_url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1" required>
+          <p class="field-error" id="eBase"></p>
+        </div>
+        <div class="field span-2">
+          <label for="fKey" data-api-i18n="f.key">API Key（可留空）</label>
+          <div class="inline-row">
+            <input id="fKey" name="api_key" type="password" autocomplete="new-password" spellcheck="false">
+            <button id="toggleKey" class="button secondary" type="button" aria-pressed="false" aria-controls="fKey"></button>
+          </div>
+          <p class="field-hint" data-api-i18n="f.keyHint">Key 只保存在本机的设置文件中。无鉴权接口可留空。</p>
+        </div>
+        <div class="field span-2">
+          <label for="fModel" data-api-i18n="f.model">模型名称</label>
+          <div class="inline-row">
+            <input id="fModel" name="model" type="text" autocomplete="off" spellcheck="false" required>
+            <button id="fetchModels" class="button secondary" type="button"></button>
+          </div>
+          <select id="modelList" class="model-list" hidden></select>
+          <p class="field-hint" id="modelHint"></p>
+          <p class="field-error" id="eModel"></p>
+        </div>
+        <div class="field">
+          <label for="fEffort" data-api-i18n="f.effort">思考强度</label>
+          <input id="fEffort" name="reasoning_effort" type="text" list="effortOptions" autocomplete="off" spellcheck="false">
+          <datalist id="effortOptions"><option value="low"></option><option value="medium"></option><option value="high"></option></datalist>
+          <p class="field-hint" data-api-i18n="f.effortHint">各服务商取值不同，可留空或手动填写。</p>
+        </div>
+        <div class="field">
+          <label for="fTemp" data-api-i18n="f.temp">温度</label>
+          <input id="fTemp" name="temperature" type="number" min="0" max="2" step="0.1" required>
+          <p class="field-hint" data-api-i18n="f.tempHint">0 到 2。</p>
+          <p class="field-error" id="eTemp"></p>
+        </div>
+        <details class="span-2 more-params" id="moreParams">
+          <summary data-api-i18n="f.more">更多参数</summary>
+          <div class="editor-grid">
+            <div class="field">
+              <label for="fTokens" data-api-i18n="f.tokens">最大输出 Token</label>
+              <input id="fTokens" name="max_output_tokens" type="number" min="1" max="1000000" step="1" required>
+              <p class="field-error" id="eTokens"></p>
+            </div>
+            <div class="field">
+              <label for="fTimeout" data-api-i18n="f.timeout">请求超时（秒）</label>
+              <input id="fTimeout" name="timeout_seconds" type="number" min="1" max="600" step="1" required>
+              <p class="field-error" id="eTimeout"></p>
+            </div>
+          </div>
+        </details>
+        <fieldset class="span-2 test-box">
+          <legend data-api-i18n="t.legend">连接测试</legend>
+          <div class="test-row">
+            <p class="field-hint" data-api-i18n="t.cost">会用当前填写的参数向模型发送一次很短的测试请求，可能产生少量费用。</p>
+            <button id="testConnection" class="button secondary" type="button"></button>
+          </div>
+          <p id="testResult" class="test-result" role="status"></p>
+        </fieldset>
+        <p id="editorError" class="editor-error span-2" role="alert"></p>
+      </div>
+      <footer class="api-dialog-foot">
+        <button class="button secondary" type="button" id="editorCancel" data-api-i18n="common.cancel">取消</button>
+        <button class="button primary" type="submit" id="editorSubmit"></button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="promptDialog" class="api-dialog api-dialog-wide" aria-labelledby="promptDialogTitle" data-i18n-ignore="true">
+    <form id="promptForm" novalidate>
+      <header class="api-dialog-head">
+        <h2 id="promptDialogTitle"></h2>
+        <p id="promptDialogScope" class="api-dialog-sub"></p>
+      </header>
+      <div class="api-dialog-body">
+        <div class="field">
+          <label for="pfName" data-api-i18n="pe.name">预设名称</label>
+          <input id="pfName" name="name" type="text" maxlength="40" autocomplete="off" required>
+          <p class="field-error" id="peName"></p>
+        </div>
+        <div class="field">
+          <label for="pfText" data-api-i18n="pe.text">系统提示词全文</label>
+          <textarea id="pfText" name="text" rows="16" spellcheck="false" required></textarea>
+          <p class="field-hint"><span id="pfCount"></span><span id="pfBuiltinNote"></span></p>
+          <p class="field-error" id="peText"></p>
+        </div>
+        <p class="prompt-warning" id="pfWarning" role="note"></p>
+        <p id="promptError" class="editor-error" role="alert"></p>
+      </div>
+      <footer class="api-dialog-foot">
+        <button class="button secondary" type="button" id="promptCancel" data-api-i18n="common.cancel">取消</button>
+        <button class="button secondary" type="button" id="promptCopy" data-api-i18n="pe.copy">复制为自定义预设</button>
+        <button class="button primary" type="submit" id="promptSubmit"></button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog" class="api-dialog" aria-labelledby="confirmTitle" aria-describedby="confirmBody" data-i18n-ignore="true">
+    <div class="api-dialog-head"><h2 id="confirmTitle"></h2></div>
+    <div class="api-dialog-body" id="confirmBody"></div>
+    <footer class="api-dialog-foot">
+      <button class="button secondary" type="button" id="confirmCancel"></button>
+      <button class="button primary" type="button" id="confirmOk"></button>
+    </footer>
+  </dialog>
 </body>
 </html>
