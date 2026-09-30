@@ -146,4 +146,24 @@
 - 迁后8 execution（0.143s）、13 unit/routing（0.405s）、10 unit lifecycle（0.208s）通过；A联合134 Python（2.406s）/4 JS、72 Python内存compile/9 JS syntax、两种fresh import顺序、含延迟导入runtime SCC=[]、git diff --check通过。主 Agent独立完整diff/134 Python/4 JS/72 Python/9 JS/runtime SCC=[]通过。
 - 模块大小：pipeline7627行、execution_runtime58行、provider_routing139行、project_catalog476行。运行资源只依赖cell基础，不依赖manager；Router无manager回调或prompt职责。
 - 剩余耦合：Scheduler的submit/Future callback、stop/grace/run状态协调仍在facade；UnitWorkflow的translation/review及repair业务仍在facade。保留原线程/锁/save时点，下一批实质workflow再迁。
-- 本批四生产文件与台账冻结ready供主 Agent验收提交；pipeline下一窗口交B check-only owner，A仅准备下一UnitWorkflow闭包清单和缺口测试，不改生产直到再次授权。
+- 本批已验收提交 `d994d65`；B check-only349旧行已验收提交 `894be60`，A随后获得UnitWorkflow窗口。主 Agent同时核实原工作目录仍clean且HEAD=`67de1e069eb96f398f632659626eac846b372847`，全部旧PipelineManager公开方法及签名保持。
+
+## A9 输出公开契约补充
+
+- 等待生产窗口期间仅新增tests/test_pipeline_output_contract.py五项，复用明确离线ControlledProvider，TemporaryDirectory真实文件与Event，不写生产。
+- 原执行逻辑5/5（0.174s）；主 Agent独立5/5（0.158s）、联合139 Python/4 JS、74 Python/9 JS syntax、runtime SCC=[]通过，已独立提交 `6f4e7a3`。
+- readiness覆盖passed/user_modified/accepted_risk和未完成/空译文。legacy status fixture明确标注且公开output_status观察，manual edit及accept-risk用公开入口；保留needs_action人工编辑仍needs_action的原行为。
+- text与markdown真实artifact内容、hash、trace节点/unit/source绑定、磁盘metadata及最后document_exported事件；generate_output save失败保持已发布artifact与内存metadata/event、磁盘state仍旧，不重调provider。
+- pending或故障exporter不追加metadata/event/持久化；替换state后glyph缓存更新U+FFFD warning，原readiness及旧返回值不受污染。未复制既有DOCX trace发布回滚测试。
+
+## A10 UnitWorkflow 实质领域迁移
+
+- 精确十三旧定义495行：UnitWorkflow五方法304（execute10、translate99、review117、repair_control42、repair_progress36）；unit_state八函数191（find5、cancel8、failure26、repair_payload27、repair_failure49、restore18、repair_save_failed35、repair_terminal23）。原classmethod decorator另1行，不影响600行预算。
+- Workflow四明确对象cell/requests/router/InvocationPort与普通clock；Port仅cancel/begin/end/is_current四方法，无scheduler引用或manager callback。cancel/failure函数明确cell+clock调用基础append_event，其余函数显式state/unit/data；unit_state因此为领域mutation函数集合，不宣称全部纯函数。
+- Scheduler仅submit目标直接转workflow.execute；facade原find/failure/cancel调用直接函数；十三旧私有定义删除，旧两个request adapter因原测试继续保留，Workflow直接requests构造。所有模型调用、原锁块、验证、提交、保存和失败回滚整体迁移，未剥离commit步骤。
+- translation validation仍锁外原unit引用，最终translation commit仅原cancel guard；review validation和commit保留两次原锁，不修潜在竞态。明确AST映射now_iso→clock/self.clock，store_reference原_unit_request_clock→self.clock，二者仍动态pipeline.now_iso。
+- 初版文本生成将迁移正文unparse压成长行且丢失注释，主 Agent以维护性回退拒绝。已从HEAD原文本通过token/限定调用替换重建，恢复全部多行格式、字典和原关键注释。最终十三迁移正文经显式参数/归属/clock映射AST全部同构，117保留method正文仅wiring同构，constructor仅增加Workflow；全部原docstring值及十九原内部COMMENT按序完整保留。
+- A联合144 Python（2.699s）/4 JS、76 Python内存compile/9 JS syntax、fresh双顺序imports、含延迟导入runtime SCC=[]、git diff --check通过。主 Agent独立读恢复格式/ctor/diff并复核13 moved AST、保留method、19 COMMENT及144 Python/4 JS/76 Python/9 JS/runtime SCC=[]通过；B parallel五项测试独立提交 `5f316ae`，包含在联合计数。
+- 本批A生产范围仅pipeline/core.unit_state/new core.unit_workflow与本台账，未写B core.quality_batches。模块最终大小pipeline6784行、unit_state431行、unit_workflow347行，不将B未接线scan变更归本批。
+- 剩余耦合：scheduler的executor/Future callback、run scope、stop/grace、stats/snapshot/output invalidation与人工入口原子协调仍facade；后续Scheduler批单独迁，不为facade薄而破坏事务锁。完整架构重构仍在推进，未作宿主或driver-accepted声明。
+- 本批A文件全部冻结ready，等待主 Agent独立提交；pipeline随即交B scan接线窗口，A仅准备Scheduler精确依赖清单。

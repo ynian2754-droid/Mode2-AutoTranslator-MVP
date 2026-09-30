@@ -1,9 +1,13 @@
-"""Unit feedback and persisted repair-summary normalization rules."""
+"""Unit feedback rules and lifecycle mutations with explicit resources."""
 
 from __future__ import annotations
 
+from core import project_state
+from core.exceptions import PipelineError
+from core.project_state import ProjectStateCell
+
 import copy
-from typing import Any
+from typing import Any, Callable
 
 TECHNICAL_REVIEW_PROVIDER = "controller"
 
@@ -221,3 +225,207 @@ def normalize_repair_entry(value: Any) -> dict[str, Any] | None:
         entry["translation_revision"] = translation_revision
     return entry
 
+
+
+def find_unit(state: dict[str, Any], unit_id: str) -> dict[str, Any]:
+    for unit in state["units"]:
+        if unit["id"] == unit_id:
+            return unit
+    raise PipelineError(f"找不到翻译单元：{unit_id}")
+
+
+def mark_cancelled(cell: ProjectStateCell, unit_id: str, message: str = "用户已停止当前流水线。", *, clock: Callable[[], str]) -> None:
+    unit = find_unit(cell.state, unit_id)
+    if unit.get("status") == "cancelled":
+        return
+    unit["status"] = "cancelled"
+    unit["last_error"] = message
+    unit["updated_at"] = clock()
+    project_state.append_event(cell, "unit_cancelled", message, unit_id, {}, clock)
+
+
+def mark_failure(cell: ProjectStateCell, unit_id: str, rule: str, message: str, *, clock: Callable[[], str]) -> None:
+    unit = find_unit(cell.state, unit_id)
+    ensure_unit_feedback_fields(unit)
+    unit["status"] = "needs_action"
+    unit["last_error"] = message
+    unit["review_suggestions"] = []
+    unit["review_issues"] = [
+        {
+            "rule": rule,
+            "severity": "error",
+            "block_id": unit_id,
+            "message": message,
+            "evidence": {},
+        }
+    ]
+    unit["review"] = {
+        "verdict": "FAIL",
+        "issues": unit["review_issues"],
+        "metrics": {},
+        "provider": "controller",
+        "model": "strict-import-gate",
+        "translation_revision": unit["translation_revision"],
+        "at": clock(),
+    }
+    unit["updated_at"] = clock()
+    project_state.append_event(cell, "unit_failed", message, unit_id, {'rule': rule}, clock)
+
+
+def repair_summary_payload(
+    *,
+    invocation_id: str,
+    status: str,
+    round_no: Any,
+    max_rounds: Any,
+    api_calls: Any,
+    success_round: Any,
+    errors: Any,
+    source_sha256: str | None = None,
+    translation_revision: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "invocation_id": str(invocation_id or ""),
+        "status": status,
+        "round": max(0, int(round_no or 0)),
+        "max_rounds": max(0, int(max_rounds or 0)),
+        "api_calls": max(0, int(api_calls or 0)),
+        "success_round": success_round if status == "succeeded" else None,
+        "errors": normalize_repair_errors(errors),
+    }
+    if source_sha256:
+        payload["source_sha256"] = str(source_sha256)
+    if isinstance(translation_revision, int) and not isinstance(translation_revision, bool):
+        payload["translation_revision"] = translation_revision
+    return payload
+
+
+def record_repair_failure(
+    state: dict[str, Any],
+    unit_id: str,
+    kind: str,
+    invocation_id: str,
+    error: BaseException,
+    *,
+    source_sha256: str,
+    translation_revision: int | None,
+    status: str = "failed",
+) -> None:
+    """Record a terminal failure without leaking raw exception text."""
+    unit = find_unit(state, unit_id)
+    existing = unit.setdefault("model_repair", {}).get(kind)
+    outcome = getattr(error, "outcome", None)
+    if outcome is not None:
+        payload = repair_summary_payload(
+            invocation_id=invocation_id,
+            status=status,
+            round_no=getattr(outcome, "round", 0),
+            max_rounds=getattr(outcome, "max_rounds", 0),
+            api_calls=getattr(outcome, "api_calls", 0),
+            success_round=None,
+            errors=list(getattr(outcome, "errors", ()) or ()),
+            source_sha256=source_sha256,
+            translation_revision=translation_revision,
+        )
+    else:
+        saved = existing if isinstance(existing, dict) else {}
+        payload = repair_summary_payload(
+            invocation_id=invocation_id,
+            status=status,
+            round_no=saved.get("round", 0),
+            max_rounds=saved.get("max_rounds", 0),
+            api_calls=saved.get("api_calls", 0),
+            success_round=None,
+            errors=[
+                {
+                    "code": "provider_error" if status == "failed" else "cancelled",
+                    "location": "request",
+                    "detail": "模型调用未完成，未进行内容修正。"
+                    if status == "failed"
+                    else "该次模型执行已被取消。",
+                }
+            ],
+            source_sha256=source_sha256,
+            translation_revision=translation_revision,
+        )
+    unit["model_repair"][kind] = payload
+
+
+def restore_unit_commit(
+    state: dict[str, Any],
+    unit_id: str,
+    unit_snapshot: dict[str, Any],
+    events_snapshot: list[Any],
+) -> None:
+    """Roll one failed result commit back to its pre-commit in-memory state.
+
+        A model result is not business state until it is on disk.  Without this,
+        a failed save would leave the half-committed unit (and its success
+        event) in memory for the next save to publish, even though the user was
+        told the commit failed.  Only the two result-commit paths use this; it
+        is not a storage layer or a general transaction mechanism.
+        """
+    unit = find_unit(state, unit_id)
+    unit.clear()
+    unit.update(unit_snapshot)
+    state["events"] = list(events_snapshot)
+
+
+def mark_repair_save_failed(
+    unit: dict[str, Any],
+    kind: str,
+    repair: Any = None,
+) -> None:
+    """A failed save must never leave a success claim behind.
+
+        ``repair`` is the completed model summary when the caller still holds
+        it; otherwise the entry already on the unit is downgraded.
+        """
+    existing = (unit.get("model_repair") or {}).get(kind)
+    saved = existing if isinstance(existing, dict) else {}
+    data = repair if isinstance(repair, dict) else saved
+    errors = list(data.get("errors") or saved.get("errors") or [])
+    errors.append(
+        {
+            "code": "save_failed",
+            "location": "commit",
+            "detail": "结果落盘失败，未记录为成功。",
+        }
+    )
+    unit.setdefault("model_repair", {})[kind] = repair_summary_payload(
+        invocation_id=data.get("invocation_id") or saved.get("invocation_id") or "",
+        status="failed",
+        round_no=data.get("round", saved.get("round")),
+        max_rounds=data.get("max_rounds", saved.get("max_rounds")),
+        api_calls=data.get("api_calls", saved.get("api_calls")),
+        success_round=None,
+        errors=errors,
+        source_sha256=unit.get("source_sha256"),
+        translation_revision=unit.get("translation_revision")
+        if kind == "review"
+        else None,
+    )
+
+
+def record_repair_terminal(
+    unit: dict[str, Any],
+    kind: str,
+    repair: Any,
+    *,
+    status: str,
+) -> None:
+    """Attach a terminal summary inside the same commit as the result."""
+    data = repair if isinstance(repair, dict) else {}
+    unit.setdefault("model_repair", {})[kind] = repair_summary_payload(
+        invocation_id=data.get("invocation_id") or "",
+        status=status,
+        round_no=data.get("round"),
+        max_rounds=data.get("max_rounds"),
+        api_calls=data.get("api_calls"),
+        success_round=data.get("success_round"),
+        errors=data.get("errors"),
+        source_sha256=unit.get("source_sha256"),
+        translation_revision=unit.get("translation_revision")
+        if kind == "review"
+        else None,
+    )

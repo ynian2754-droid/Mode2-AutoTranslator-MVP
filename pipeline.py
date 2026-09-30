@@ -25,6 +25,7 @@ from core.docx_exporter import DocxExportError, DocxExporter
 from core.epub_exporter import EpubExportError, EpubExporter
 from core.exceptions import ConflictError, PipelineError
 from core.execution_runtime import ExecutionRuntime, InvocationTracker
+from core.unit_workflow import UnitWorkflow
 from core.quality_batches import QualityBatchWorkflow
 from core.quality_cards import (
     QUALITY_ACTION_LABELS,
@@ -233,6 +234,10 @@ class PipelineManager:
         self._quality_batches = QualityBatchWorkflow(
             self._project_state, self._quality_runtime, self._quality_progress,
             self._provider_router, clock=lambda: now_iso(),
+        )
+        self._unit_workflow = UnitWorkflow(
+            self._project_state, self._unit_requests, self._provider_router,
+            self._invocations, _unit_request_clock,
         )
         # Read-only PDF glyph pre-check cache, keyed by a cheap state signature
         # because the workbench polls the output status.
@@ -822,14 +827,8 @@ class PipelineManager:
 
     def get_unit(self, unit_id: str) -> dict[str, Any]:
         with self.lock:
-            unit = self._find_unit_locked(unit_id)
+            unit = unit_state.find_unit(self.state, unit_id)
             return copy.deepcopy(unit)
-
-    def _find_unit_locked(self, unit_id: str) -> dict[str, Any]:
-        for unit in self.state["units"]:
-            if unit["id"] == unit_id:
-                return unit
-        raise PipelineError(f"找不到翻译单元：{unit_id}")
 
     def create_project(
         self,
@@ -1127,15 +1126,6 @@ class PipelineManager:
             # make the worker wait for its own executor to shut down.
             executor.shutdown(wait=False)
 
-    def _mark_cancelled_locked(self, unit_id: str, message: str = "用户已停止当前流水线。") -> None:
-        unit = self._find_unit_locked(unit_id)
-        if unit.get("status") == "cancelled":
-            return
-        unit["status"] = "cancelled"
-        unit["last_error"] = message
-        unit["updated_at"] = now_iso()
-        self._event_locked("unit_cancelled", message, unit_id)
-
     def _finish_run_if_idle_locked(self, run_id: str) -> None:
         run = self.state["run"]
         if run.get("run_id") != run_id or self._run_has_active_tasks_locked(run_id):
@@ -1184,16 +1174,16 @@ class PipelineManager:
                 }
                 completed_unit_ids = run.setdefault("completed_unit_ids", [])
                 for unit_id in expected_unit_ids.difference(completed_unit_ids):
-                    unit = self._find_unit_locked(unit_id)
+                    unit = unit_state.find_unit(self.state, unit_id)
                     if unit.get("status") in PROCESSING_STATUSES or unit.get("status") == "pending":
-                        self._mark_cancelled_locked(unit_id, "停止请求已收尾，未启动的任务已取消。")
+                        unit_state.mark_cancelled(self._project_state, unit_id, "停止请求已收尾，未启动的任务已取消。", clock=_unit_request_clock)
                     completed_unit_ids.append(unit_id)
                 self._recompute_stats_locked()
                 self._finish_run_if_idle_locked(run_id)
                 self._save_locked()
                 return
             for unit_id in active_unit_ids:
-                self._mark_cancelled_locked(unit_id, "停止等待超时，已放弃等待该请求。")
+                unit_state.mark_cancelled(self._project_state, unit_id, "停止等待超时，已放弃等待该请求。", clock=_unit_request_clock)
             completed_at = now_iso()
             run["running"] = False
             run["status"] = "cancelled"
@@ -1222,7 +1212,7 @@ class PipelineManager:
         if mode not in {"translation", "review"}:
             raise PipelineError(f"不支持的任务模式：{mode}")
 
-        unit = self._find_unit_locked(unit_id)
+        unit = unit_state.find_unit(self.state, unit_id)
         unit_state.ensure_unit_feedback_fields(unit)
         previous_revision: int | None = None
         if mode == "translation":
@@ -1252,7 +1242,7 @@ class PipelineManager:
         }
         executor = self._ensure_executor_locked()
         try:
-            future = executor.submit(self._run_unit, unit_id, mode, run_id)
+            future = executor.submit(self._unit_workflow.execute, unit_id, mode, run_id)
             self._execution.active_futures[unit_id] = future
             future.add_done_callback(
                 lambda completed, unit_id=unit_id, run_id=run_id: self._task_finished(
@@ -1267,7 +1257,7 @@ class PipelineManager:
             self._execution.active_task_meta.pop(unit_id, None)
             if previous_revision is not None:
                 unit["translation_revision"] = previous_revision
-            self._mark_failure_locked(unit_id, "scheduler_error", f"任务入队失败：{exc}")
+            unit_state.mark_failure(self._project_state, unit_id, "scheduler_error", f"任务入队失败：{exc}", clock=_unit_request_clock)
             raise PipelineError(f"任务入队失败：{exc}") from exc
 
     def _start_job_locked(self, unit_ids: list[str], mode: str) -> dict[str, Any]:
@@ -1276,7 +1266,7 @@ class PipelineManager:
         if not unit_ids:
             return self._snapshot_locked()
         for unit_id in unit_ids:
-            unit = self._find_unit_locked(unit_id)
+            unit = unit_state.find_unit(self.state, unit_id)
             if unit_id in self._execution.active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
             if mode == "translation" and unit.get("status") not in CANCELLABLE_START_STATUSES:
@@ -1354,7 +1344,7 @@ class PipelineManager:
             for unit_id in list(run.get("unit_ids") or []):
                 if unit_id not in self._execution.active_unit_ids:
                     continue
-                unit = self._find_unit_locked(unit_id)
+                unit = unit_state.find_unit(self.state, unit_id)
                 task_meta = self._execution.active_task_meta.get(unit_id) or {}
                 if (
                     task_meta.get("mode") == "translation"
@@ -1363,7 +1353,7 @@ class PipelineManager:
                 ):
                     unit["translation_revision"] = max(0, int(unit["translation_revision"]) - 1)
                 if unit.get("status") in PROCESSING_STATUSES:
-                    self._mark_cancelled_locked(unit_id)
+                    unit_state.mark_cancelled(self._project_state, unit_id, clock=_unit_request_clock)
 
             # Futures which have not started never enter provider code.
             for future in list(self._execution.active_futures.values()):
@@ -1373,17 +1363,6 @@ class PipelineManager:
             self._finish_run_if_idle_locked(str(run.get("run_id") or ""))
             self._save_locked()
             return self._snapshot_locked()
-
-    def _run_unit(self, unit_id: str, mode: str, run_id: str) -> None:
-        with self.lock:
-            if self._invocations.cancel_requested_locked(run_id):
-                self._mark_cancelled_locked(unit_id)
-                self._save_locked()
-                return
-        if mode == "translation":
-            self._translate_and_review_unit(unit_id, run_id)
-        else:
-            self._review_unit(unit_id, run_id)
 
     def _task_finished(self, unit_id: str, run_id: str, future: Future[Any]) -> None:
         with self.lock:
@@ -1399,11 +1378,11 @@ class PipelineManager:
                 future.result()
             except Exception as exc:  # pragma: no cover - final safety net
                 try:
-                    unit = self._find_unit_locked(unit_id)
+                    unit = unit_state.find_unit(self.state, unit_id)
                 except PipelineError:
                     unit = None
                 if unit is not None and unit.get("status") in PROCESSING_STATUSES:
-                    self._mark_failure_locked(unit_id, "worker_error", f"工作器异常：{exc}")
+                    unit_state.mark_failure(self._project_state, unit_id, "worker_error", f"工作器异常：{exc}", clock=_unit_request_clock)
 
             self._recompute_stats_locked()
             self._finish_run_if_idle_locked(run_id)
@@ -1442,32 +1421,6 @@ class PipelineManager:
     ) -> ReviewRequest:
         return self._unit_requests.review_locked(unit, snapshot)
 
-    def _mark_failure_locked(self, unit_id: str, rule: str, message: str) -> None:
-        unit = self._find_unit_locked(unit_id)
-        unit_state.ensure_unit_feedback_fields(unit)
-        unit["status"] = "needs_action"
-        unit["last_error"] = message
-        unit["review_suggestions"] = []
-        unit["review_issues"] = [
-            {
-                "rule": rule,
-                "severity": "error",
-                "block_id": unit_id,
-                "message": message,
-                "evidence": {},
-            }
-        ]
-        unit["review"] = {
-            "verdict": "FAIL",
-            "issues": unit["review_issues"],
-            "metrics": {},
-            "provider": "controller",
-            "model": "strict-import-gate",
-            "translation_revision": unit["translation_revision"],
-            "at": now_iso(),
-        }
-        unit["updated_at"] = now_iso()
-        self._event_locked("unit_failed", message, unit_id, rule=rule)
 
     # --- bounded model-repair invocation bookkeeping -----------------------
     #
@@ -1477,463 +1430,16 @@ class PipelineManager:
 
     MODEL_REPAIR_KINDS = ("translation", "review")
 
-    @classmethod
-    def _repair_summary_payload(
-        cls,
-        *,
-        invocation_id: str,
-        status: str,
-        round_no: Any,
-        max_rounds: Any,
-        api_calls: Any,
-        success_round: Any,
-        errors: Any,
-        source_sha256: str | None = None,
-        translation_revision: int | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "invocation_id": str(invocation_id or ""),
-            "status": status,
-            "round": max(0, int(round_no or 0)),
-            "max_rounds": max(0, int(max_rounds or 0)),
-            "api_calls": max(0, int(api_calls or 0)),
-            "success_round": success_round if status == "succeeded" else None,
-            "errors": unit_state.normalize_repair_errors(errors),
-        }
-        if source_sha256:
-            payload["source_sha256"] = str(source_sha256)
-        if isinstance(translation_revision, int) and not isinstance(translation_revision, bool):
-            payload["translation_revision"] = translation_revision
-        return payload
 
 
 
-    def _repair_control_locked(
-        self,
-        unit_id: str,
-        kind: str,
-        invocation_id: str,
-        run_id: str,
-        *,
-        source_sha256: str,
-        translation_revision: int | None = None,
-    ) -> RepairControl:
-        """Bind one execution's hook; every check re-reads live state under the lock."""
 
-        def before_attempt(round_no: int, api_calls: int) -> None:
-            with self.lock:
-                unit = self._find_unit_locked(unit_id)
-                if self._invocations.cancel_requested_locked(run_id):
-                    raise PipelineError("已取消，不再发起下一轮模型修正。")
-                if not self._invocations.is_current_locked(unit_id, kind, invocation_id):
-                    raise PipelineError("该次执行已被更新的执行取代，不再发起下一轮模型修正。")
-                if unit.get("source_sha256") != source_sha256:
-                    raise PipelineError("源文已变化，不再发起下一轮模型修正。")
-                if translation_revision is not None and unit.get("translation_revision") != translation_revision:
-                    raise PipelineError("译文版本已变化，不再发起下一轮模型修正。")
 
-        def on_progress(progress: RepairProgress) -> None:
-            with self.lock:
-                self._apply_repair_progress_locked(
-                    unit_id,
-                    kind,
-                    invocation_id,
-                    run_id,
-                    source_sha256=source_sha256,
-                    translation_revision=translation_revision,
-                    progress=progress,
-                )
 
-        return RepairControl(
-            invocation_id=invocation_id,
-            kind=kind,
-            before_attempt=before_attempt,
-            on_progress=on_progress,
-        )
 
-    def _apply_repair_progress_locked(
-        self,
-        unit_id: str,
-        kind: str,
-        invocation_id: str,
-        run_id: str,
-        *,
-        source_sha256: str,
-        translation_revision: int | None,
-        progress: RepairProgress,
-    ) -> None:
-        """Publish an in-flight round only when it still belongs to this execution."""
-        if progress.kind != kind or progress.invocation_id != invocation_id:
-            return
-        if not self._invocations.is_current_locked(unit_id, kind, invocation_id):
-            return
-        if self._invocations.cancel_requested_locked(run_id):
-            return
-        unit = self._find_unit_locked(unit_id)
-        if unit.get("source_sha256") != source_sha256:
-            return
-        if translation_revision is not None and unit.get("translation_revision") != translation_revision:
-            return
-        # In-memory only: a transient round must never be persisted, so a restart
-        # cannot display it as still running.
-        unit.setdefault("model_repair", {})[kind] = self._repair_summary_payload(
-            invocation_id=invocation_id,
-            status=progress.status if progress.status in {"running", "repairing"} else "failed",
-            round_no=progress.round,
-            max_rounds=progress.max_rounds,
-            api_calls=progress.api_calls,
-            success_round=None,
-            errors=progress.errors,
-            source_sha256=source_sha256,
-            translation_revision=translation_revision,
-        )
 
-    def _repair_failure_summary_locked(
-        self,
-        unit_id: str,
-        kind: str,
-        invocation_id: str,
-        error: BaseException,
-        *,
-        source_sha256: str,
-        translation_revision: int | None,
-        status: str = "failed",
-    ) -> None:
-        """Record a terminal failure without leaking raw exception text."""
-        unit = self._find_unit_locked(unit_id)
-        existing = unit.setdefault("model_repair", {}).get(kind)
-        outcome = getattr(error, "outcome", None)
-        if outcome is not None:
-            payload = self._repair_summary_payload(
-                invocation_id=invocation_id,
-                status=status,
-                round_no=getattr(outcome, "round", 0),
-                max_rounds=getattr(outcome, "max_rounds", 0),
-                api_calls=getattr(outcome, "api_calls", 0),
-                success_round=None,
-                errors=list(getattr(outcome, "errors", ()) or ()),
-                source_sha256=source_sha256,
-                translation_revision=translation_revision,
-            )
-        else:
-            saved = existing if isinstance(existing, dict) else {}
-            payload = self._repair_summary_payload(
-                invocation_id=invocation_id,
-                status=status,
-                round_no=saved.get("round", 0),
-                max_rounds=saved.get("max_rounds", 0),
-                api_calls=saved.get("api_calls", 0),
-                success_round=None,
-                errors=[
-                    {
-                        "code": "provider_error" if status == "failed" else "cancelled",
-                        "location": "request",
-                        "detail": "模型调用未完成，未进行内容修正。"
-                        if status == "failed"
-                        else "该次模型执行已被取消。",
-                    }
-                ],
-                source_sha256=source_sha256,
-                translation_revision=translation_revision,
-            )
-        unit["model_repair"][kind] = payload
 
-    def _restore_unit_commit_locked(
-        self,
-        unit_id: str,
-        unit_snapshot: dict[str, Any],
-        events_snapshot: list[Any],
-    ) -> None:
-        """Roll one failed result commit back to its pre-commit in-memory state.
 
-        A model result is not business state until it is on disk.  Without this,
-        a failed save would leave the half-committed unit (and its success
-        event) in memory for the next save to publish, even though the user was
-        told the commit failed.  Only the two result-commit paths use this; it
-        is not a storage layer or a general transaction mechanism.
-        """
-        unit = self._find_unit_locked(unit_id)
-        unit.clear()
-        unit.update(unit_snapshot)
-        self.state["events"] = list(events_snapshot)
-
-    def _repair_summary_mark_save_failed_locked(
-        self,
-        unit: dict[str, Any],
-        kind: str,
-        repair: Any = None,
-    ) -> None:
-        """A failed save must never leave a success claim behind.
-
-        ``repair`` is the completed model summary when the caller still holds
-        it; otherwise the entry already on the unit is downgraded.
-        """
-        existing = (unit.get("model_repair") or {}).get(kind)
-        saved = existing if isinstance(existing, dict) else {}
-        data = repair if isinstance(repair, dict) else saved
-        errors = list(data.get("errors") or saved.get("errors") or [])
-        errors.append(
-            {
-                "code": "save_failed",
-                "location": "commit",
-                "detail": "结果落盘失败，未记录为成功。",
-            }
-        )
-        unit.setdefault("model_repair", {})[kind] = self._repair_summary_payload(
-            invocation_id=data.get("invocation_id") or saved.get("invocation_id") or "",
-            status="failed",
-            round_no=data.get("round", saved.get("round")),
-            max_rounds=data.get("max_rounds", saved.get("max_rounds")),
-            api_calls=data.get("api_calls", saved.get("api_calls")),
-            success_round=None,
-            errors=errors,
-            source_sha256=unit.get("source_sha256"),
-            translation_revision=unit.get("translation_revision")
-            if kind == "review"
-            else None,
-        )
-
-    def _repair_terminal_summary_locked(
-        self,
-        unit: dict[str, Any],
-        kind: str,
-        repair: Any,
-        *,
-        status: str,
-    ) -> None:
-        """Attach a terminal summary inside the same commit as the result."""
-        data = repair if isinstance(repair, dict) else {}
-        unit.setdefault("model_repair", {})[kind] = self._repair_summary_payload(
-            invocation_id=data.get("invocation_id") or "",
-            status=status,
-            round_no=data.get("round"),
-            max_rounds=data.get("max_rounds"),
-            api_calls=data.get("api_calls"),
-            success_round=data.get("success_round"),
-            errors=data.get("errors"),
-            source_sha256=unit.get("source_sha256"),
-            translation_revision=unit.get("translation_revision")
-            if kind == "review"
-            else None,
-        )
-
-    def _translate_and_review_unit(self, unit_id: str, _run_id: str) -> None:
-        with self.lock:
-            unit = self._find_unit_locked(unit_id)
-            if unit.get("status") != "waiting_translation":
-                return
-            if self._invocations.cancel_requested_locked(_run_id):
-                self._mark_cancelled_locked(unit_id)
-                self._save_locked()
-                return
-            unit["status"] = "translating"
-            unit["updated_at"] = now_iso()
-            request, snapshot = self._request_for_unit_locked(unit)
-            source_sha256 = unit["source_sha256"]
-            invocation_id = self._invocations.begin_locked(unit_id, "translation")
-            request = replace(
-                request,
-                control=self._repair_control_locked(
-                    unit_id,
-                    "translation",
-                    invocation_id,
-                    _run_id,
-                    source_sha256=source_sha256,
-                ),
-            )
-            self._event_locked("translation_started", "翻译端已接收单元。", unit_id)
-            self._save_locked()
-        try:
-            translator, _reviewer = self._provider_router.unit_pair()
-            result = translator.translate(request)
-            with self.lock:
-                if self._invocations.cancel_requested_locked(_run_id):
-                    self._invocations.end_locked(unit_id, "translation", invocation_id)
-                    self._mark_cancelled_locked(unit_id)
-                    self._save_locked()
-                    return
-            unit_validation.validate_translation_result(unit, result)
-        except Exception as exc:
-            with self.lock:
-                self._invocations.end_locked(unit_id, "translation", invocation_id)
-                cancelled = self._invocations.cancel_requested_locked(_run_id)
-                if cancelled:
-                    self._mark_cancelled_locked(unit_id)
-                else:
-                    self._mark_failure_locked(unit_id, "translation_error", str(exc))
-                self._repair_failure_summary_locked(
-                    unit_id,
-                    "translation",
-                    invocation_id,
-                    exc,
-                    source_sha256=source_sha256,
-                    translation_revision=None,
-                    status="cancelled" if cancelled else "failed",
-                )
-                self._save_locked()
-            return
-
-        with self.lock:
-            unit = self._find_unit_locked(unit_id)
-            self._invocations.end_locked(unit_id, "translation", invocation_id)
-            if self._invocations.cancel_requested_locked(_run_id):
-                self._mark_cancelled_locked(unit_id)
-                self._save_locked()
-                return
-            commit_snapshot = copy.deepcopy(unit)
-            events_snapshot = list(self.state.get("events") or [])
-            unit["translation"] = result.translated_text
-            # Feedback is one-shot: a successful translation consumes it before review.
-            unit["pending_translation_feedback"] = None
-            # The new AI result supersedes any saved manual reference.  Keep
-            # this mutation in the same commit as the translation so failures
-            # and cancellations leave the old reference intact.
-            unit["user_edited_translation"] = None
-            unit["translation_provider"] = result.provider
-            unit["translation_model"] = result.model
-            unit["usage"] = result.usage
-            unit["status"] = "waiting_review"
-            unit["last_error"] = None
-            unit["updated_at"] = now_iso()
-            # The snapshot is bound to the revision this translation created.
-            unit_requests.store_reference(unit, snapshot, kind="translation", clock=_unit_request_clock)
-            if result.repair is not None:
-                # Same protected commit as the translation itself: success is
-                # never recorded before the result is safely stored.
-                self._repair_terminal_summary_locked(
-                    unit, "translation", result.repair, status="succeeded"
-                )
-            self._event_locked("translation_imported", "翻译结果已通过严格导入，进入独立校验。", unit_id)
-            try:
-                self._save_locked()
-            except Exception as exc:
-                # The result was never stored: roll the unit back to its
-                # pre-commit business state (previous translation, manual
-                # reference and quality reference) and report the commit
-                # failure through the existing failure path.  No model re-call.
-                self._restore_unit_commit_locked(unit_id, commit_snapshot, events_snapshot)
-                self._mark_failure_locked(unit_id, "save_error", f"翻译结果保存失败：{exc}")
-                self._repair_summary_mark_save_failed_locked(unit, "translation", result.repair)
-                return
-        self._review_unit(unit_id, _run_id, reference=snapshot)
-
-    def _review_unit(
-        self,
-        unit_id: str,
-        _run_id: str,
-        reference: dict[str, Any] | None = None,
-    ) -> None:
-        with self.lock:
-            unit = self._find_unit_locked(unit_id)
-            unit_state.ensure_unit_feedback_fields(unit)
-            if unit.get("status") not in {"waiting_review", "needs_action"}:
-                return
-            if self._invocations.cancel_requested_locked(_run_id):
-                self._mark_cancelled_locked(unit_id)
-                self._save_locked()
-                return
-            if not unit.get("translation"):
-                self._mark_failure_locked(unit_id, "empty_translation", "没有可供校验的译文。")
-                self._save_locked()
-                return
-            unit["status"] = "reviewing"
-            unit["updated_at"] = now_iso()
-            request = self._review_request_for_unit_locked(unit, reference)
-            review_revision = unit["translation_revision"]
-            source_sha256 = unit["source_sha256"]
-            invocation_id = self._invocations.begin_locked(unit_id, "review")
-            request = replace(
-                request,
-                control=self._repair_control_locked(
-                    unit_id,
-                    "review",
-                    invocation_id,
-                    _run_id,
-                    source_sha256=source_sha256,
-                    translation_revision=review_revision,
-                ),
-            )
-            self._event_locked("review_started", "独立校验端已接收译文。", unit_id)
-            self._save_locked()
-        try:
-            _translator, reviewer = self._provider_router.unit_pair()
-            result = reviewer.review(request)
-            with self.lock:
-                if self._invocations.cancel_requested_locked(_run_id):
-                    self._invocations.end_locked(unit_id, "review", invocation_id)
-                    self._mark_cancelled_locked(unit_id)
-                    self._save_locked()
-                    return
-                current = self._find_unit_locked(unit_id)
-                if current.get("translation_revision") != review_revision:
-                    raise PipelineError("校验结果对应的译文版本已经变化，已拒绝导入。")
-                unit_validation.validate_review_result(current, result)
-        except Exception as exc:
-            with self.lock:
-                self._invocations.end_locked(unit_id, "review", invocation_id)
-                cancelled = self._invocations.cancel_requested_locked(_run_id)
-                if cancelled:
-                    self._mark_cancelled_locked(unit_id)
-                else:
-                    self._mark_failure_locked(unit_id, "review_error", str(exc))
-                self._repair_failure_summary_locked(
-                    unit_id,
-                    "review",
-                    invocation_id,
-                    exc,
-                    source_sha256=source_sha256,
-                    translation_revision=review_revision,
-                    status="cancelled" if cancelled else "failed",
-                )
-                self._save_locked()
-            return
-
-        with self.lock:
-            unit = self._find_unit_locked(unit_id)
-            self._invocations.end_locked(unit_id, "review", invocation_id)
-            if self._invocations.cancel_requested_locked(_run_id):
-                self._mark_cancelled_locked(unit_id)
-                self._save_locked()
-                return
-            commit_snapshot = copy.deepcopy(unit)
-            events_snapshot = list(self.state.get("events") or [])
-            review_suggestions = unit_state.extract_review_suggestions(result.issues)
-            unit["review_attempts"] += 1
-            unit["review"] = {
-                "verdict": result.verdict,
-                "issues": result.issues,
-                "metrics": result.metrics,
-                "provider": result.provider,
-                "model": result.model,
-                "translation_revision": unit["translation_revision"],
-                "at": now_iso(),
-            }
-            unit["review_issues"] = result.issues
-            unit["review_suggestions"] = review_suggestions
-            unit["last_error"] = None if result.verdict == "PASS" else "独立校验未通过，等待用户裁决。"
-            unit["status"] = "passed" if result.verdict == "PASS" else "needs_action"
-            unit["updated_at"] = now_iso()
-            if result.repair is not None:
-                # A valid FAIL still completes the model execution normally; the
-                # verdict is never rewritten to PASS by the repair loop.
-                self._repair_terminal_summary_locked(
-                    unit, "review", result.repair, status="succeeded"
-                )
-            if result.verdict == "PASS":
-                self._event_locked("review_passed", "独立校验通过。", unit_id)
-            else:
-                self._event_locked("review_failed", "独立校验未通过，已交给用户处理。", unit_id)
-            try:
-                self._save_locked()
-            except Exception as exc:
-                # Same rule as the translation commit: an unstored verdict —
-                # including a valid PASS — is not a result.  Roll back and
-                # report through the existing failure path instead of leaving
-                # a "passed" unit that the next save would publish.
-                self._restore_unit_commit_locked(unit_id, commit_snapshot, events_snapshot)
-                self._mark_failure_locked(unit_id, "save_error", f"校验结果保存失败：{exc}")
-                self._repair_summary_mark_save_failed_locked(unit, "review", result.repair)
-                return
 
     @staticmethod
     def _validate_expected_revision(value: Any | None) -> int | None:
@@ -1975,7 +1481,7 @@ class PipelineManager:
             self._ensure_open_locked()
             if unit_id in self._execution.active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
-            unit = self._find_unit_locked(unit_id)
+            unit = unit_state.find_unit(self.state, unit_id)
             unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in EDITABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许编辑正式译文。")
@@ -2024,7 +1530,7 @@ class PipelineManager:
             self._ensure_open_locked()
             if unit_id in self._execution.active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
-            unit = self._find_unit_locked(unit_id)
+            unit = unit_state.find_unit(self.state, unit_id)
             unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in REVIEWABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许重新校验。")
@@ -2036,7 +1542,7 @@ class PipelineManager:
                 expected_translation_revision=expected_translation_revision,
             )
             self._start_job_locked([unit_id], "review")
-            return copy.deepcopy(self._find_unit_locked(unit_id))
+            return copy.deepcopy(unit_state.find_unit(self.state, unit_id))
 
     def retranslate_unit(
         self,
@@ -2053,7 +1559,7 @@ class PipelineManager:
             self._validate_expected_project_id_locked(expected_project_id)
             if unit_id in self._execution.active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
-            unit = self._find_unit_locked(unit_id)
+            unit = unit_state.find_unit(self.state, unit_id)
             unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in EDITABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许重新翻译。")
@@ -2087,7 +1593,7 @@ class PipelineManager:
             unit["updated_at"] = now_iso()
             self._event_locked("user_requested_retry", "用户要求重新翻译并复检。", unit_id)
             self._start_job_locked([unit_id], "translation")
-            return copy.deepcopy(self._find_unit_locked(unit_id))
+            return copy.deepcopy(unit_state.find_unit(self.state, unit_id))
 
     # ------------------------------------------------------------------
     # Quality support: concept cards, bounded scans, editorial suggestions.
@@ -2415,7 +1921,6 @@ class PipelineManager:
 
 
 
-
     def _quality_commit_locked(
         self,
         support: dict[str, Any],
@@ -2433,7 +1938,6 @@ class PipelineManager:
         commit_quality_support(
             self._project_state, support, old_support=old_support, old_events=old_events
         )
-
 
     def scan_quality_batch(
         self,
@@ -2960,7 +2464,6 @@ class PipelineManager:
                 "approved_version": support["approved_version"],
             }
 
-
     def retry_quality_batch(
         self,
         batch_id: str,
@@ -3303,12 +2806,10 @@ class PipelineManager:
             self._quality_commit_locked(support, old_support=old_support, old_events=old_events)
             return True
 
-
     def _prepare_reference_refresh_required(self) -> bool:
         support = normalize_quality_support(self.state.get("quality_support"))
         record = concept_automation.automation_of(support).get("prepare")
         return bool(isinstance(record, Mapping) and record.get("reference_refresh_required"))
-
 
     def update_quality_card(
         self,
@@ -7136,7 +6637,7 @@ class PipelineManager:
         with self.lock:
             self._ensure_open_locked()
             self._validate_expected_project_id_locked(expected_project_id)
-            unit = self._find_unit_locked(unit_id)
+            unit = unit_state.find_unit(self.state, unit_id)
             if not isinstance(unit.get("translation"), str) or not unit["translation"].strip():
                 raise PipelineError("只有已保存译文的单元才能请求表达建议。")
             self._validate_unit_write_guard_locked(
@@ -7154,7 +6655,7 @@ class PipelineManager:
             with self.lock:
                 if self._closed:
                     raise PipelineError("项目已关闭，不再发起下一轮模型修正。")
-                current = self._find_unit_locked(unit_id)
+                current = unit_state.find_unit(self.state, unit_id)
                 source_sha256, source_text, revision = binding
                 if (
                     str(current.get("source_sha256") or "") != source_sha256
@@ -7182,7 +6683,7 @@ class PipelineManager:
             if self._closed:
                 raise ConflictError("当前项目管理器已关闭，不能返回表达建议。")
             self._validate_expected_project_id_locked(expected_project_id)
-            current = self._find_unit_locked(unit_id)
+            current = unit_state.find_unit(self.state, unit_id)
             source_sha256, source_text, revision = binding
             if (
                 str(current.get("source_sha256") or "") != source_sha256
@@ -7217,7 +6718,7 @@ class PipelineManager:
             self._ensure_open_locked()
             if unit_id in self._execution.active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
-            unit = self._find_unit_locked(unit_id)
+            unit = unit_state.find_unit(self.state, unit_id)
             if unit.get("status") not in ACTION_STATUSES:
                 raise PipelineError("只有待裁决的单元才能进行人工裁决。")
             if expected_source_sha256 and expected_source_sha256 != unit["source_sha256"]:
