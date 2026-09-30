@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.exceptions import PipelineError
+from core.project_factory import empty_output_state
 
 
 def glyph_precheck_locked(
@@ -190,3 +191,9 @@ def resolve_output_format_locked(
     if output_format not in output_formats:
         raise PipelineError(f"输出格式必须是：{', '.join(output_formats)}。")
     return output_format
+
+
+def invalidate_output(state: dict[str, Any]) -> None:
+    output = state.get("output")
+    if isinstance(output, dict) and output.get("path"):
+        state["output"] = empty_output_state()

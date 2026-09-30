@@ -1,4 +1,4 @@
-"""Unit feedback rules and lifecycle mutations with explicit resources."""
+"""Unit rules and mutations; snapshots refresh unit stats then copy the whole project."""
 
 from __future__ import annotations
 
@@ -8,6 +8,19 @@ from core.project_state import ProjectStateCell
 
 import copy
 from typing import Any, Callable
+
+ACTIVE_STATUSES = {"translating", "reviewing"}
+WAITING_STATUSES = {"waiting_translation", "waiting_review"}
+PROCESSING_STATUSES = ACTIVE_STATUSES | WAITING_STATUSES
+TRANSLATION_PROCESSING_STATUSES = {"waiting_translation", "translating"}
+ACTION_STATUSES = {"needs_action"}
+EDITABLE_TRANSLATION_STATUSES = {"needs_action", "passed", "user_modified", "accepted_risk"}
+# Accepting a risk is a user override, not an AI review result.  It remains
+# editable and can be sent through the normal translate->review retry flow,
+# but it must not expose a direct review operation of the already accepted
+# version.
+REVIEWABLE_TRANSLATION_STATUSES = {"needs_action", "passed", "user_modified"}
+CANCELLABLE_START_STATUSES = {"pending", "cancelled"}
 
 TECHNICAL_REVIEW_PROVIDER = "controller"
 
@@ -429,3 +442,27 @@ def record_repair_terminal(
         if kind == "review"
         else None,
     )
+
+
+def recompute_unit_stats(state: dict[str, Any]) -> None:
+    units = state.get("units", [])
+    counts = {
+        "total": len(units),
+        "pending": sum(item.get("status") == "pending" for item in units),
+        "active": sum(item.get("status") in ACTIVE_STATUSES for item in units),
+        "waiting": sum(item.get("status") in WAITING_STATUSES for item in units),
+        "cancelled": sum(item.get("status") == "cancelled" for item in units),
+        "passed": sum(item.get("status") == "passed" for item in units),
+        "user_modified": sum(item.get("status") == "user_modified" for item in units),
+        "needs_action": sum(item.get("status") == "needs_action" for item in units),
+        "accepted_risk": sum(item.get("status") == "accepted_risk" for item in units),
+        "failed": sum(item.get("status") == "failed" for item in units),
+    }
+    counts["done"] = counts["passed"] + counts["user_modified"] + counts["accepted_risk"]
+    counts["progress_percent"] = round((counts["done"] / counts["total"]) * 100, 1) if counts["total"] else 0
+    state["stats"] = counts
+
+
+def snapshot_with_unit_stats(state: dict[str, Any]) -> dict[str, Any]:
+    recompute_unit_stats(state)
+    return copy.deepcopy(state)

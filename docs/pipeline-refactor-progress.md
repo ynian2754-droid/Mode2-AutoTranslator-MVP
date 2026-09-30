@@ -166,4 +166,14 @@
 - A联合144 Python（2.699s）/4 JS、76 Python内存compile/9 JS syntax、fresh双顺序imports、含延迟导入runtime SCC=[]、git diff --check通过。主 Agent独立读恢复格式/ctor/diff并复核13 moved AST、保留method、19 COMMENT及144 Python/4 JS/76 Python/9 JS/runtime SCC=[]通过；B parallel五项测试独立提交 `5f316ae`，包含在联合计数。
 - 本批A生产范围仅pipeline/core.unit_state/new core.unit_workflow与本台账，未写B core.quality_batches。模块最终大小pipeline6784行、unit_state431行、unit_workflow347行，不将B未接线scan变更归本批。
 - 剩余耦合：scheduler的executor/Future callback、run scope、stop/grace、stats/snapshot/output invalidation与人工入口原子协调仍facade；后续Scheduler批单独迁，不为facade薄而破坏事务锁。完整架构重构仍在推进，未作宿主或driver-accepted声明。
-- 本批A文件全部冻结ready，等待主 Agent独立提交；pipeline随即交B scan接线窗口，A仅准备Scheduler精确依赖清单。
+- 本批已验收提交 `8a9b8af`；B scan接线已验收提交 `628ae94`，随后A获得Scheduler窗口。
+
+## A11 Scheduler 完整调度 owner
+
+- 精确17定义386旧行：Scheduler十三方法351，execution.derived_run_status显式state函数11，已有unit_state统计17/快照3，已有pipeline_output.invalidate_output显式state函数4。快照先刷新unit统计投影，再deepcopy整个项目；无新summary万能service。
+- Scheduler只持cell/runtime/workflow/clock与精确ExecutionFactories。executor/event/timer/run_id及stop_grace supplier均pipeline模块级函数，在原构造点动态读取原名，不闭包manager或提前freeze。八unit状态常量归unit_state并pipeline直接alias保持set身份；STOP_GRACE_SECONDS归execution并保持alias及动态读取兼容。
+- public start/stop保留签名/docstring并直接委托原锁正文；close仍facade原lock/closed协调，原close谓词未增强。manual/review/retry/decide等原原子段调用scheduler.start_job_locked，其他内部callsites直接领域函数/owner，不新增批量private桥。
+- 原executor ensure在submit try外、完整scope先于同步callback、5s grace旧worker退役与迟到回调隔离、shutdown wait差异、所有原lock/save/异常顺序保持。原注释和多行格式保留。
+- A定向8 execution（0.144s）/10 lifecycle（0.216s）通过；独立17 moved/386旧行及100 retained方法受限AST全部同构，constructor只新增Scheduler，原comments/docstrings及八常量身份通过。主 Agent独立完整正文/diff/wiring/AST及144 Python/4 JS、77 Python内存compile/9 JS syntax、runtime SCC=[]、diff检查通过，生产已接受。
+- 最终模块大小pipeline5927行、execution439行、unit_state468行、pipeline_output199行。当前A仅四生产文件与本台账；B质量owner准备另批，未纳入A scope。
+- 生产及台账冻结ready供主 Agent提交，pipeline窗口交回B。剩余输出owner、editorial及项目/人工入口等领域将另批处理，完整架构目标仍未最终验收。

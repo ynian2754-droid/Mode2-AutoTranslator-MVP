@@ -24,6 +24,14 @@ from core.document_model import empty_document
 from core.docx_exporter import DocxExportError, DocxExporter
 from core.epub_exporter import EpubExportError, EpubExporter
 from core.exceptions import ConflictError, PipelineError
+from core import execution
+from core.execution import STOP_GRACE_SECONDS
+from core.unit_state import (
+    ACTIVE_STATUSES, WAITING_STATUSES, PROCESSING_STATUSES,
+    TRANSLATION_PROCESSING_STATUSES, ACTION_STATUSES,
+    EDITABLE_TRANSLATION_STATUSES, REVIEWABLE_TRANSLATION_STATUSES,
+    CANCELLABLE_START_STATUSES,
+)
 from core.execution_runtime import ExecutionRuntime, InvocationTracker
 from core.unit_workflow import UnitWorkflow
 from core.quality_batches import QualityBatchWorkflow
@@ -135,20 +143,7 @@ MAX_LOOKUP_CARDS = 20
 
 QUALITY_SCAN_SCOPES = {"current", "selected", "continue"}
 
-ACTIVE_STATUSES = {"translating", "reviewing"}
-WAITING_STATUSES = {"waiting_translation", "waiting_review"}
-PROCESSING_STATUSES = ACTIVE_STATUSES | WAITING_STATUSES
-TRANSLATION_PROCESSING_STATUSES = {"waiting_translation", "translating"}
-ACTION_STATUSES = {"needs_action"}
-EDITABLE_TRANSLATION_STATUSES = {"needs_action", "passed", "user_modified", "accepted_risk"}
-# Accepting a risk is a user override, not an AI review result.  It remains
-# editable and can be sent through the normal translate->review retry flow,
-# but it must not expose a direct review operation of the already accepted
-# version.
-REVIEWABLE_TRANSLATION_STATUSES = {"needs_action", "passed", "user_modified"}
-CANCELLABLE_START_STATUSES = {"pending", "cancelled"}
 OUTPUT_FORMATS = ("markdown", "text", "pdf", "epub", "docx")
-STOP_GRACE_SECONDS = 5.0
 _UNSET = object()
 
 
@@ -177,6 +172,22 @@ def _quality_provider_factories() -> provider_routing.QualityFactories:
         OpenAICompatibleConceptResolutionProvider,
         FakeQualityProvider,
     )
+
+
+def _execution_executor(**kwargs: Any) -> Any:
+    return ThreadPoolExecutor(**kwargs)
+
+
+def _execution_event() -> Any:
+    return threading.Event()
+
+
+def _execution_timer(*args: Any, **kwargs: Any) -> Any:
+    return threading.Timer(*args, **kwargs)
+
+
+def _execution_stop_grace() -> float:
+    return STOP_GRACE_SECONDS
 
 
 class PipelineManager:
@@ -238,6 +249,14 @@ class PipelineManager:
         self._unit_workflow = UnitWorkflow(
             self._project_state, self._unit_requests, self._provider_router,
             self._invocations, _unit_request_clock,
+        )
+        self._scheduler = execution.ExecutionScheduler(
+            self._project_state, self._execution, self._unit_workflow,
+            _unit_request_clock,
+            execution.ExecutionFactories(
+                _execution_executor, _execution_event, _execution_timer,
+                _new_invocation_id, _execution_stop_grace,
+            ),
         )
         # Read-only PDF glyph pre-check cache, keyed by a cheap state signature
         # because the workbench polls the output status.
@@ -428,7 +447,7 @@ class PipelineManager:
                 )
             self._ensure_document_manifest_locked()
             self._normalize_interrupted_prepare_locked(state)
-            self._recompute_stats_locked()
+            unit_state.recompute_unit_stats(self.state)
             self._save_locked()
             return state
         state = self._new_state(DEFAULT_SAMPLE_SOURCE, demo_mode=True, max_concurrency=3, provider="demo")
@@ -574,39 +593,13 @@ class PipelineManager:
     def _ensure_open_locked(self) -> None:
         project_state.ensure_open(self._project_state)
 
-    def _invalidate_output_locked(self) -> None:
-        output = self.state.get("output")
-        if isinstance(output, dict) and output.get("path"):
-            self.state["output"] = empty_output_state()
-
     def _event_locked(self, event_type: str, message: str, unit_id: str | None = None, **details: Any) -> None:
         project_state.append_event(self._project_state, event_type, message, unit_id, details, now_iso)
 
-    def _recompute_stats_locked(self) -> None:
-        units = self.state.get("units", [])
-        counts = {
-            "total": len(units),
-            "pending": sum(item.get("status") == "pending" for item in units),
-            "active": sum(item.get("status") in ACTIVE_STATUSES for item in units),
-            "waiting": sum(item.get("status") in WAITING_STATUSES for item in units),
-            "cancelled": sum(item.get("status") == "cancelled" for item in units),
-            "passed": sum(item.get("status") == "passed" for item in units),
-            "user_modified": sum(item.get("status") == "user_modified" for item in units),
-            "needs_action": sum(item.get("status") == "needs_action" for item in units),
-            "accepted_risk": sum(item.get("status") == "accepted_risk" for item in units),
-            "failed": sum(item.get("status") == "failed" for item in units),
-        }
-        counts["done"] = counts["passed"] + counts["user_modified"] + counts["accepted_risk"]
-        counts["progress_percent"] = round((counts["done"] / counts["total"]) * 100, 1) if counts["total"] else 0
-        self.state["stats"] = counts
-
-    def _snapshot_locked(self) -> dict[str, Any]:
-        self._recompute_stats_locked()
-        return copy.deepcopy(self.state)
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            return self._snapshot_locked()
+            return unit_state.snapshot_with_unit_stats(self.state)
 
     def _glyph_precheck_locked(self) -> dict[str, Any]:
         """Read-only scan of the saved translations against the embedded PDF font.
@@ -708,7 +701,7 @@ class PipelineManager:
                 raise ConflictError("当前流水线正在运行，不能修改并发数。")
             current = int(self.state.get("config", {}).get("max_concurrency") or 3)
             if current != value:
-                self._close_executor_locked()
+                self._scheduler.close_executor_locked()
                 self.state.setdefault("config", {})["max_concurrency"] = value
                 self._event_locked("concurrency_updated", f"并发数已确认设置为 {value}。")
                 self._save_locked()
@@ -849,7 +842,7 @@ class PipelineManager:
             self._ensure_open_locked()
             if self.state.get("run", {}).get("running"):
                 raise ConflictError("当前流水线仍在运行，不能替换项目。")
-            self._close_executor_locked()
+            self._scheduler.close_executor_locked()
             segment_words = self._resolve_segment_words_locked(
                 target_segment_words=target_segment_words,
                 max_segment_words=max_segment_words,
@@ -865,7 +858,7 @@ class PipelineManager:
                 target_segment_words=segment_words,
             )
             self._save_locked()
-            return self._snapshot_locked()
+            return unit_state.snapshot_with_unit_stats(self.state)
 
     def import_source_file(
         self,
@@ -891,7 +884,7 @@ class PipelineManager:
             self._ensure_open_locked()
             if self.state.get("run", {}).get("running"):
                 raise ConflictError("当前流水线仍在运行，不能替换项目。")
-            self._close_executor_locked()
+            self._scheduler.close_executor_locked()
             segment_words = self._resolve_segment_words_locked(
                 target_segment_words=target_segment_words,
                 max_segment_words=max_segment_words,
@@ -926,7 +919,7 @@ class PipelineManager:
                 size_bytes=imported.size_bytes,
             )
             self._save_locked()
-            return self._snapshot_locked()
+            return unit_state.snapshot_with_unit_stats(self.state)
 
     def resegment_source(self, *, confirm_reset: bool = False) -> dict[str, Any]:
         """Explicitly rebuild Units from the stored source after writing a backup.
@@ -964,7 +957,7 @@ class PipelineManager:
 
             target_words = project_settings.configured_target_words(config)
             old_state = copy.deepcopy(self.state)
-            self._close_executor_locked()
+            self._scheduler.close_executor_locked()
             try:
                 backup_path = self.store.backup_state(old_state, reason="before_resegment")
             except OSError as exc:
@@ -1009,7 +1002,7 @@ class PipelineManager:
                 format=imported.format,
             )
             self._save_locked()
-            result = self._snapshot_locked()
+            result = unit_state.snapshot_with_unit_stats(self.state)
             result["resegmentation"] = {
                 "backup_path": backup_path,
                 "previous_unit_count": len(old_state.get("units") or []),
@@ -1018,42 +1011,6 @@ class PipelineManager:
             }
             return result
 
-    def _ensure_executor_locked(self) -> ThreadPoolExecutor:
-        self._ensure_open_locked()
-        run = self.state.get("run") or {}
-        configured = run.get("max_concurrency") if run.get("running") else None
-        max_workers = int(configured or self.state["config"].get("max_concurrency") or 3)
-        if self._execution.executor is not None and self._execution.executor_max_concurrency != max_workers:
-            if self._execution.active_unit_ids:
-                raise ConflictError("当前流水线正在运行，不能切换任务调度器的并发数。")
-            self._execution.executor.shutdown(wait=True)
-            self._execution.executor = None
-            self._execution.executor_max_concurrency = None
-        if self._execution.executor is None:
-            self._execution.executor = ThreadPoolExecutor(
-                max_workers=max_workers,
-                thread_name_prefix="mode2-worker",
-            )
-            self._execution.executor_max_concurrency = max_workers
-        return self._execution.executor
-
-    def _close_executor_locked(self) -> None:
-        if self._execution.active_unit_ids:
-            raise ConflictError("当前项目仍有单元在运行，不能关闭任务调度器。")
-        for timer in self._execution.stop_timers.values():
-            timer.cancel()
-        self._execution.stop_timers.clear()
-        self._execution.run_cancel_events.clear()
-        executor = self._execution.executor
-        self._execution.executor = None
-        self._execution.executor_max_concurrency = None
-        self._execution.active_futures.clear()
-        if executor is not None:
-            executor.shutdown(wait=True)
-        retired_executors = list(self._execution.retired_executors.values())
-        self._execution.retired_executors.clear()
-        for retired_executor in retired_executors:
-            retired_executor.shutdown(wait=False)
 
     def has_live_work_locked(self) -> bool:
         """Read deletion eligibility while the caller holds the project lock."""
@@ -1069,246 +1026,18 @@ class PipelineManager:
         with self.lock:
             if self._closed:
                 return
-            self._close_executor_locked()
+            self._scheduler.close_executor_locked()
             self._closed = True
 
-    def _begin_run_locked(self, unit_count: int, mode: str) -> str:
-        self._ensure_open_locked()
-        run = self.state["run"]
-        if not run.get("running"):
-            run_id = f"run-{uuid.uuid4().hex[:10]}"
-            cancel_event = threading.Event()
-            self._execution.run_cancel_events[run_id] = cancel_event
-            run.update(
-                {
-                    "run_id": run_id,
-                    "status": "running",
-                    "running": True,
-                    "max_concurrency": int(self.state["config"].get("max_concurrency") or 3),
-                    "started_at": now_iso(),
-                    "completed_at": None,
-                    "unit_ids": [],
-                    "completed_unit_ids": [],
-                    "cancel_requested": False,
-                    "stop_requested_at": None,
-                    "cancelled_at": None,
-                    "stop_timeout_at": None,
-                }
-            )
-            self._event_locked(
-                "run_started",
-                f"开始处理 {unit_count} 个单元，并发数 {run['max_concurrency']}。",
-                mode=mode,
-            )
-            return run_id
-        if run.get("cancel_requested"):
-            raise ConflictError("当前流水线正在停止，请等待停止完成后再提交任务。")
-        run_id = str(run.get("run_id") or f"run-{uuid.uuid4().hex[:10]}")
-        run["run_id"] = run_id
-        self._execution.run_cancel_events.setdefault(run_id, threading.Event())
-        return run_id
 
-    def _run_has_active_tasks_locked(self, run_id: str) -> bool:
-        return any(
-            task_meta.get("run_id") == run_id
-            for task_meta in self._execution.active_task_meta.values()
-        )
 
-    def _cancel_stop_timer_locked(self, run_id: str) -> None:
-        timer = self._execution.stop_timers.pop(run_id, None)
-        if timer is not None:
-            timer.cancel()
 
-    def _shutdown_retired_executor_locked(self, run_id: str) -> None:
-        executor = self._execution.retired_executors.pop(run_id, None)
-        if executor is not None:
-            # This is called by a worker's done callback.  Waiting here would
-            # make the worker wait for its own executor to shut down.
-            executor.shutdown(wait=False)
 
-    def _finish_run_if_idle_locked(self, run_id: str) -> None:
-        run = self.state["run"]
-        if run.get("run_id") != run_id or self._run_has_active_tasks_locked(run_id):
-            return
-        expected_unit_ids = {str(unit_id) for unit_id in run.get("unit_ids") or []}
-        completed_unit_ids = {str(unit_id) for unit_id in run.get("completed_unit_ids") or []}
-        if expected_unit_ids and not expected_unit_ids.issubset(completed_unit_ids):
-            return
-        if not run.get("running"):
-            return
-        run["running"] = False
-        run["completed_at"] = now_iso()
-        if run.get("cancel_requested"):
-            run["status"] = "cancelled"
-            run["cancelled_at"] = run["completed_at"]
-        else:
-            run["status"] = self._derived_run_status_locked()
-        self._event_locked(
-            "run_finished",
-            f"当前任务集合结束：{run['status']}。",
-            counts=self.state["stats"],
-        )
-        self._cancel_stop_timer_locked(run_id)
-        self._execution.run_cancel_events.pop(run_id, None)
-        self._shutdown_retired_executor_locked(run_id)
 
-    def _force_finish_stopping_run(self, run_id: str) -> None:
-        """Close the controller state if a provider ignores cooperative stop.
 
-        Python threads cannot be safely killed.  The per-run cancellation event
-        remains set so a late provider response is discarded, while the UI and
-        scheduler are allowed to move on to a new run for other units.
-        """
-        with self.lock:
-            run = self.state.get("run") or {}
-            if run.get("run_id") != run_id or not run.get("running") or not run.get("cancel_requested"):
-                return
-            active_unit_ids = [
-                unit_id
-                for unit_id, task_meta in self._execution.active_task_meta.items()
-                if task_meta.get("run_id") == run_id
-            ]
-            if not active_unit_ids:
-                expected_unit_ids = {
-                    str(unit_id) for unit_id in run.get("unit_ids") or []
-                }
-                completed_unit_ids = run.setdefault("completed_unit_ids", [])
-                for unit_id in expected_unit_ids.difference(completed_unit_ids):
-                    unit = unit_state.find_unit(self.state, unit_id)
-                    if unit.get("status") in PROCESSING_STATUSES or unit.get("status") == "pending":
-                        unit_state.mark_cancelled(self._project_state, unit_id, "停止请求已收尾，未启动的任务已取消。", clock=_unit_request_clock)
-                    completed_unit_ids.append(unit_id)
-                self._recompute_stats_locked()
-                self._finish_run_if_idle_locked(run_id)
-                self._save_locked()
-                return
-            for unit_id in active_unit_ids:
-                unit_state.mark_cancelled(self._project_state, unit_id, "停止等待超时，已放弃等待该请求。", clock=_unit_request_clock)
-            completed_at = now_iso()
-            run["running"] = False
-            run["status"] = "cancelled"
-            run["completed_at"] = completed_at
-            run["cancelled_at"] = completed_at
-            run["stop_timeout_at"] = completed_at
-            self._recompute_stats_locked()
-            # Do not let a provider that ignores cancellation occupy the
-            # executor needed by the next Run.  Its old workers remain
-            # isolated and can only discard their late results.
-            if self._execution.executor is not None:
-                self._execution.retired_executors[run_id] = self._execution.executor
-                self._execution.executor = None
-            self._event_locked(
-                "run_finished",
-                "停止等待超时，流水线已结束；迟到的请求结果将被丢弃。",
-                active_unit_count=len(active_unit_ids),
-            )
-            self._cancel_stop_timer_locked(run_id)
-            self._save_locked()
-
-    def _queue_unit_locked(self, unit_id: str, mode: str, run_id: str) -> None:
-        self._ensure_open_locked()
-        if unit_id in self._execution.active_unit_ids:
-            raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
-        if mode not in {"translation", "review"}:
-            raise PipelineError(f"不支持的任务模式：{mode}")
-
-        unit = unit_state.find_unit(self.state, unit_id)
-        unit_state.ensure_unit_feedback_fields(unit)
-        previous_revision: int | None = None
-        if mode == "translation":
-            if unit.get("status") not in CANCELLABLE_START_STATUSES:
-                raise PipelineError(f"翻译单元 {unit_id} 当前不能重新翻译。")
-            previous_revision = unit["translation_revision"]
-            unit["translation_revision"] = previous_revision + 1
-            unit["status"] = "waiting_translation"
-            unit["translation_attempts"] += 1
-            unit["updated_at"] = now_iso()
-            self._event_locked("translation_queued", "翻译任务已进入共享调度器。", unit_id)
-        else:
-            if unit.get("status") not in {"reviewing", *REVIEWABLE_TRANSLATION_STATUSES}:
-                raise PipelineError(f"翻译单元 {unit_id} 当前不能重新校验。")
-            unit["status"] = "waiting_review"
-            unit["updated_at"] = now_iso()
-            self._event_locked("review_queued", "校验任务已进入共享调度器。", unit_id)
-
-        self._execution.active_unit_ids.add(unit_id)
-        self.state["run"].setdefault("unit_ids", [])
-        if unit_id not in self.state["run"]["unit_ids"]:
-            self.state["run"]["unit_ids"].append(unit_id)
-        self._execution.active_task_meta[unit_id] = {
-            "mode": mode,
-            "translation_revision": unit.get("translation_revision"),
-            "run_id": run_id,
-        }
-        executor = self._ensure_executor_locked()
-        try:
-            future = executor.submit(self._unit_workflow.execute, unit_id, mode, run_id)
-            self._execution.active_futures[unit_id] = future
-            future.add_done_callback(
-                lambda completed, unit_id=unit_id, run_id=run_id: self._task_finished(
-                    unit_id,
-                    run_id,
-                    completed,
-                )
-            )
-        except Exception as exc:
-            self._execution.active_unit_ids.discard(unit_id)
-            self._execution.active_futures.pop(unit_id, None)
-            self._execution.active_task_meta.pop(unit_id, None)
-            if previous_revision is not None:
-                unit["translation_revision"] = previous_revision
-            unit_state.mark_failure(self._project_state, unit_id, "scheduler_error", f"任务入队失败：{exc}", clock=_unit_request_clock)
-            raise PipelineError(f"任务入队失败：{exc}") from exc
-
-    def _start_job_locked(self, unit_ids: list[str], mode: str) -> dict[str, Any]:
-        self._ensure_open_locked()
-        unit_ids = list(dict.fromkeys(str(unit_id) for unit_id in unit_ids))
-        if not unit_ids:
-            return self._snapshot_locked()
-        for unit_id in unit_ids:
-            unit = unit_state.find_unit(self.state, unit_id)
-            if unit_id in self._execution.active_unit_ids:
-                raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
-            if mode == "translation" and unit.get("status") not in CANCELLABLE_START_STATUSES:
-                raise PipelineError(f"翻译单元 {unit_id} 当前不能重新翻译。")
-            if mode == "review" and unit.get("status") not in {"reviewing", *REVIEWABLE_TRANSLATION_STATUSES}:
-                raise PipelineError(f"翻译单元 {unit_id} 当前不能重新校验。")
-        self._invalidate_output_locked()
-        was_running = bool(self.state["run"].get("running"))
-        run_id = self._begin_run_locked(len(unit_ids), mode)
-        # Freeze the scope before submitting any Future.  A completion callback
-        # must never be able to finish a run while the remaining units are
-        # still being submitted.
-        if not was_running:
-            self.state["run"]["unit_ids"] = list(unit_ids)
-            self.state["run"]["completed_unit_ids"] = []
-        else:
-            existing_unit_ids = self.state["run"].setdefault("unit_ids", [])
-            for unit_id in unit_ids:
-                if unit_id not in existing_unit_ids:
-                    existing_unit_ids.append(unit_id)
-        for unit_id in unit_ids:
-            self._queue_unit_locked(unit_id, mode, run_id)
-        self._save_locked()
-        return self._snapshot_locked()
 
     def start(self, unit_ids: list[str] | None = None) -> dict[str, Any]:
-        with self.lock:
-            self._ensure_open_locked()
-            if self.state["run"].get("running"):
-                raise ConflictError("当前流水线仍在运行，请等待结束或先停止。")
-            if unit_ids is None:
-                selected_ids = [
-                    unit["id"]
-                    for unit in self.state["units"]
-                    if unit.get("status") in CANCELLABLE_START_STATUSES
-                    and unit["id"] not in self._execution.active_unit_ids
-                ]
-            else:
-                selected_ids = list(dict.fromkeys(str(unit_id) for unit_id in unit_ids))
-                if not selected_ids:
-                    raise PipelineError("请至少选择一个可翻译的处理单元。")
-            return self._start_job_locked(selected_ids, "translation")
+        return self._scheduler.start(unit_ids)
 
     def stop(self) -> dict[str, Any]:
         """Request a cooperative stop for the current run.
@@ -1316,100 +1045,8 @@ class PipelineManager:
         Provider calls already in flight are allowed to return, but their
         results are discarded and no following pipeline stage is started.
         """
-        with self.lock:
-            self._ensure_open_locked()
-            run = self.state["run"]
-            if not run.get("running"):
-                return self._snapshot_locked()
-            if not run.get("cancel_requested"):
-                run["cancel_requested"] = True
-                run["status"] = "stopping"
-                run["stop_requested_at"] = now_iso()
-                run_id = str(run.get("run_id") or "")
-                cancel_event = self._execution.run_cancel_events.get(run_id)
-                if cancel_event is not None:
-                    cancel_event.set()
-                self._event_locked("run_stop_requested", "用户请求停止当前流水线。")
-                timer = threading.Timer(
-                    STOP_GRACE_SECONDS,
-                    self._force_finish_stopping_run,
-                    args=(run_id,),
-                )
-                timer.daemon = True
-                self._execution.stop_timers[run_id] = timer
-                timer.start()
+        return self._scheduler.stop()
 
-            # Mark every active unit first. This prevents a provider callback
-            # from committing a result while the stop request is being handled.
-            for unit_id in list(run.get("unit_ids") or []):
-                if unit_id not in self._execution.active_unit_ids:
-                    continue
-                unit = unit_state.find_unit(self.state, unit_id)
-                task_meta = self._execution.active_task_meta.get(unit_id) or {}
-                if (
-                    task_meta.get("mode") == "translation"
-                    and unit.get("status") in TRANSLATION_PROCESSING_STATUSES
-                    and unit.get("translation_revision") == task_meta.get("translation_revision")
-                ):
-                    unit["translation_revision"] = max(0, int(unit["translation_revision"]) - 1)
-                if unit.get("status") in PROCESSING_STATUSES:
-                    unit_state.mark_cancelled(self._project_state, unit_id, clock=_unit_request_clock)
-
-            # Futures which have not started never enter provider code.
-            for future in list(self._execution.active_futures.values()):
-                future.cancel()
-
-            self._recompute_stats_locked()
-            self._finish_run_if_idle_locked(str(run.get("run_id") or ""))
-            self._save_locked()
-            return self._snapshot_locked()
-
-    def _task_finished(self, unit_id: str, run_id: str, future: Future[Any]) -> None:
-        with self.lock:
-            self._execution.active_unit_ids.discard(unit_id)
-            self._execution.active_futures.pop(unit_id, None)
-            self._execution.active_task_meta.pop(unit_id, None)
-            run = self.state.get("run") or {}
-            if run.get("run_id") == run_id:
-                completed_unit_ids = run.setdefault("completed_unit_ids", [])
-                if unit_id not in completed_unit_ids:
-                    completed_unit_ids.append(unit_id)
-            try:
-                future.result()
-            except Exception as exc:  # pragma: no cover - final safety net
-                try:
-                    unit = unit_state.find_unit(self.state, unit_id)
-                except PipelineError:
-                    unit = None
-                if unit is not None and unit.get("status") in PROCESSING_STATUSES:
-                    unit_state.mark_failure(self._project_state, unit_id, "worker_error", f"工作器异常：{exc}", clock=_unit_request_clock)
-
-            self._recompute_stats_locked()
-            self._finish_run_if_idle_locked(run_id)
-            current_run = self.state.get("run") or {}
-            if (
-                not self._run_has_active_tasks_locked(run_id)
-                and (
-                    current_run.get("run_id") != run_id
-                    or not current_run.get("running")
-                )
-            ):
-                self._cancel_stop_timer_locked(run_id)
-                self._execution.run_cancel_events.pop(run_id, None)
-                self._shutdown_retired_executor_locked(run_id)
-            self._save_locked()
-
-    def _derived_run_status_locked(self) -> str:
-        stats = self.state.get("stats") or {}
-        if stats.get("needs_action", 0):
-            return "needs_action"
-        if stats.get("pending", 0) or stats.get("waiting", 0) or stats.get("active", 0):
-            return "ready"
-        if stats.get("cancelled", 0):
-            return "ready"
-        if stats.get("total", 0) and stats.get("done", 0) == stats.get("total", 0):
-            return "completed"
-        return "ready"
 
     def _request_for_unit_locked(self, unit: dict[str, Any]) -> tuple[TranslationRequest, dict[str, Any] | None]:
         return self._unit_requests.translation_locked(unit)
@@ -1490,7 +1127,7 @@ class PipelineManager:
                 expected_source_sha256=expected_source_sha256,
                 expected_translation_revision=expected_translation_revision,
             )
-            self._invalidate_output_locked()
+            pipeline_output.invalidate_output(self.state)
             clean_translation = translation.strip()
             unit["translation"] = clean_translation
             unit["user_edited_translation"] = clean_translation
@@ -1513,7 +1150,7 @@ class PipelineManager:
                 unit["last_error"] = None
             unit["updated_at"] = now_iso()
             self._event_locked("user_translation_saved", "人工译文已保存，等待用户明确复检。", unit_id)
-            self._recompute_stats_locked()
+            unit_state.recompute_unit_stats(self.state)
             self._save_locked()
             return copy.deepcopy(unit)
 
@@ -1541,7 +1178,7 @@ class PipelineManager:
                 expected_source_sha256=expected_source_sha256,
                 expected_translation_revision=expected_translation_revision,
             )
-            self._start_job_locked([unit_id], "review")
+            self._scheduler.start_job_locked([unit_id], "review")
             return copy.deepcopy(unit_state.find_unit(self.state, unit_id))
 
     def retranslate_unit(
@@ -1592,7 +1229,7 @@ class PipelineManager:
             unit["last_error"] = None
             unit["updated_at"] = now_iso()
             self._event_locked("user_requested_retry", "用户要求重新翻译并复检。", unit_id)
-            self._start_job_locked([unit_id], "translation")
+            self._scheduler.start_job_locked([unit_id], "translation")
             return copy.deepcopy(unit_state.find_unit(self.state, unit_id))
 
     # ------------------------------------------------------------------
@@ -1918,7 +1555,6 @@ class PipelineManager:
                 f"额外请求预算必须在 0 到 {DEFAULT_ADDITIONAL_WORK_LIMIT} 之间。"
             )
         return limit
-
 
 
     def _quality_commit_locked(
@@ -6230,15 +5866,15 @@ class PipelineManager:
                 raise PipelineError("只有待裁决的单元才能进行人工裁决。")
             if expected_source_sha256 and expected_source_sha256 != unit["source_sha256"]:
                 raise PipelineError("源文已经变化，请刷新后再提交裁决。")
-            self._invalidate_output_locked()
+            pipeline_output.invalidate_output(self.state)
             if decision == "accept-risk":
                 unit["status"] = "accepted_risk"
                 unit["user_decision"] = "accept-risk"
                 unit["last_error"] = None
                 unit["updated_at"] = now_iso()
                 self._event_locked("user_accepted_risk", "用户选择直接通过并接受当前校验风险。", unit_id)
-                self._recompute_stats_locked()
-                self.state["run"]["status"] = self._derived_run_status_locked()
+                unit_state.recompute_unit_stats(self.state)
+                self.state["run"]["status"] = execution.derived_run_status(self.state)
                 self._save_locked()
                 return copy.deepcopy(unit)
             if decision == "retry":
@@ -6268,7 +5904,7 @@ class PipelineManager:
                 unit["last_error"] = None
                 unit["updated_at"] = now_iso()
                 self._event_locked("user_requested_retry", "用户要求重新翻译并复检。", unit_id)
-                self._start_job_locked([unit_id], "translation")
+                self._scheduler.start_job_locked([unit_id], "translation")
                 return copy.deepcopy(unit)
             if not translation or not translation.strip():
                 raise PipelineError("修改后的译文不能为空。")
@@ -6284,7 +5920,7 @@ class PipelineManager:
             unit["last_error"] = None
             unit["updated_at"] = now_iso()
             self._event_locked("user_submitted_edit", "用户修改译文，重新进入独立校验。", unit_id)
-            self._start_job_locked([unit_id], "review")
+            self._scheduler.start_job_locked([unit_id], "review")
             return copy.deepcopy(unit)
 
 
