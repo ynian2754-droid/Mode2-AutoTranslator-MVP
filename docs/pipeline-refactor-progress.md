@@ -21,8 +21,9 @@
 | 阶段 | 归属/文件 | 状态 |
 | --- | --- | --- |
 | A1 单元校验契约 | 实施者 A：`tests/test_pipeline_unit_contract.py` | 原逻辑 7/7；主 Agent 已独立复跑并通过测试验收 |
-| A2 校验纯函数提取 | 实施者 A：`pipeline.py`、`core/unit_validation.py` | 首版被拒后已修正，等待主 Agent 验收 |
-| B 概念内容领域 | 质量 Agent：其授权概念域文件、`tests/test_concept_domain_contract.py` | 主 Agent 已验收并提交 `015b772` |
+| A2 校验纯函数提取 | 实施者 A：`pipeline.py`、`core/unit_validation.py` | 返工后主 Agent 验收并提交 `afba224` |
+| A3 Provider routing | 实施者 A：`pipeline.py`、`core/provider_routing.py`、A单元契约测试 | 主 Agent 独立验证通过，台账收尾后提交 |
+| B 概念内容领域 | 质量 Agent：其授权概念域文件、`tests/test_concept_domain_contract.py` | content `015b772`；candidate/消环 `57ff5e5` 均已验收提交 |
 | 验收台账 | 实施者 A：本文件 | 每阶段只维护此文件，不写 memory |
 | 后续领域与门面收敛 | 主 Agent 分配最小范围 | 尚未验收/完成 |
 
@@ -38,18 +39,36 @@
 - 修正版联合 worktree 完整 Python：68/68，1.754s（包含概念 Agent 新增测试，不能归为 A 独有）。JS `node --test tests/test_session_request.cjs`：4/4。
 - 内存 Python compile：52 文件；`node --check`：9 JS/CJS 文件。叶模块先导入及 app 先导入均通过；`unit_validation` 仅依赖 typing、`core.exceptions/providers.base`，无 manager 回导。
 - `git diff --check` 通过；并行概念域改动属于 B，A 未写其文件。
-- A 全范围 scope 工具包含新测试及台账，超过默认200行阈值；未以删去测试/台账的方式制造通过。修正版生产改动仅2文件、116行；测试及台账预算由主 Agent 显式验收。
+- A 全范围 scope 工具包含新测试及台账，超过默认200行阈值；未以删去测试/台账的方式制造通过。修正版生产改动仅2文件、116行；主 Agent 已接受441行含新测试和台账的预算并验收提交 `afba224`。
 
 ## B 阶段主 Agent 验收回执
 
 - 提交 `015b772`；17 个定义 AST 同构、别名身份保持；65 Python、4 JS、51 Python 内存语法及9 JS syntax通过。
-- 概念领域剩余 SCC：`quality_support <-> concept_automation`，尚未解开。
-- Git 提交使用命令级身份，不修改 Git 配置。A 未提交文件保留在 worktree。
+- candidate/消环提交 `57ff5e5`；主 Agent 独立联合68 Python/4 JS通过，运行时含延迟导入 SCC=[]。importers 的环仅为 TYPE_CHECKING 边，不是运行时环。
+- Git 提交使用命令级身份，不修改 Git 配置。
+
+## A3 Provider routing 验收证据
+
+- 原实现先新增5项公开入口 characterization，13/13（0.407s）；主 Agent 原实现独立13/13（0.390s）后允许迁移。覆盖六task的override/group fallback、unit partial真实defaults、quality partial共享fake与tuple冻结、falsey unit注入、default构造期间注入更新时点。
+- 独立 `ProviderBindings` 是六注入字段的唯一owner；六个明确property保持已有注入API，无万能代理或mirror。`ConfigPort` 仅 `config_for_task`，UnitFactories四项、QualityFactories五项，保留pipeline模块constructor patch。Prompt仍在request构造时冻结。
+- defaults及task选择归属 `core/provider_routing.py`；两个controller桥保留原provider_name读取lock、quality injected tuple在lock前冻结。cell尚未引入，避免提前冻结state引用；不向路由传manager、globals或完整state字典。
+- 原unit/quality路由逻辑仅bindings/settings/factory归属替换后AST严格匹配；两桥原锁及读取前缀AST严格匹配；全部其他旧方法AST不变，constructor仅六字段赋值替换成bindings构造。
+- 迁后单元契约13/13（0.386s）；联合85 Python（1.630s）/4 JS、54 Python内存compile/9 JS syntax、leaf-first/app-first import、diff检查通过；联合数包含B的12项quality公开测试。
+- 主 Agent独立85 Python/4 JS、54 Python/9 JS syntax、eager及deferred运行时SCC=[]通过；实际diff、六property兼容及业务时点均已验收。
+
+## 后续cell/execution已通过的设计边界
+
+- 唯一 `ProjectStateCell` 仅state引用、同一个原RLock、store、closed；state及_closed允许明确兼容property，领域每次读取cell.state动态看见项目替换。
+- `ExecutionRuntime` 单独拥有原executor、active集合/Future/meta、cancel Event/timer/retired executor/invocation记录；不塞业务helpers，不复制runtime字典到facade。
+- Scheduler调用UnitWorkflow；Workflow仅经窄cancellation/invocation端口读取运行控制，无Workflow到Scheduler反向调用；repair_control涉及业务反馈时可留Workflow。
+- 小基础操作采用 `core/project_state.py` 的 `append_event`/`save_project` 函数，无需为14行event或简单save造service。save仅原closed guard及store.save，不能提前吸入normalization/stats。
+- Workflow迁移前提交实际needs表，再裁决UnitData/Requests/Reference是否需要实例；纯规则优先函数及显式数据。manual/save/decide与enqueue可保留facade原锁原子段协调，不为薄而破锁。
+- 现有request私有入口测试、glyph patch、ProjectSession.delete生命周期检查须继续可用；生命周期查询可以明确替代，不能用多层property复制全部runtime。
 
 ## 剩余项与下一门
 
-- 主 Agent 验收 A2 的机械移动、公开契约和边界；未验收前不进入下一批。
-- B 的 content 阶段已验收，余下 SCC/概念工作流待分阶段推进。
+- A3已验收待提交；下一批cell基础先char（state替换动态可见、save失败/closed guard、close活跃冲突、原lock重入identity），随后迁移，独立验证后主 Agent提交。
+- B content、candidate、消环已验收；B 后续先补 quality 公开行为 characterization，A 独占 pipeline 写权。
 - 后续调度、运行控制、项目/单元工作流、质量工作流等领域迁移，须逐批冻结文件归属及 characterization；不得通过万能 PipelineContext 暴露整个 manager 或 bound manager callbacks。
 - shared holder 最多为 state 引用、原 RLock、store、closed；领域使用限定端口；具体设计由主 Agent 验收。
 - 最终完整架构验收、真实宿主边界、Git/提交/发布均未完成。本批离线证据不得标记为 driver-accepted。

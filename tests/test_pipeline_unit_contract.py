@@ -8,6 +8,7 @@ import socket
 import tempfile
 import threading
 import unittest
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from core import unit_validation
 from core.exceptions import PipelineError
 from pipeline import PipelineManager
 from providers.base import ReviewResult, TranslationResult
+from providers.quality_provider import FakeQualityProvider
 
 
 class ControlledProvider:
@@ -65,7 +67,7 @@ class PipelineUnitContractTests(unittest.TestCase):
         self.socket_guard.start()
         self.addCleanup(self.socket_guard.stop)
 
-    def make_manager(self, translation=translation_result, review=review_result):
+    def make_manager(self, translation=translation_result, review=review_result, *, provider="demo"):
         translator = ControlledProvider(translation)
         reviewer = ControlledProvider(review)
         manager = PipelineManager(Path(self.tmp.name) / str(len(list(Path(self.tmp.name).iterdir()))),
@@ -74,7 +76,7 @@ class PipelineUnitContractTests(unittest.TestCase):
         self.addCleanup(manager.close)
         self.addCleanup(translator.release.set)
         self.addCleanup(reviewer.release.set)
-        initial = manager.create_project("Hello.", max_concurrency=1)
+        initial = manager.create_project("Hello.", max_concurrency=1, provider=provider)
         self.assertEqual(len(initial["units"]), 1)
         unit_id = initial["units"][0]["id"]
         finished = threading.Event()
@@ -264,6 +266,108 @@ class PipelineUnitContractTests(unittest.TestCase):
                 with self.assertRaises(PipelineError) as raised:
                     validate(unit, result)
                 self.assertEqual(str(raised.exception), message)
+
+    def test_provider_tasks_resolve_explicit_override_then_group_fallback(self):
+        tasks = {"unit_translation": "translation", "unit_review": "review",
+                 "concept_generation": "concept_create", "concept_check": "concept_verify",
+                 "expression": "translation", "concept_disambiguation": "concept_verify"}
+        names = {"unit_translation": "OpenAICompatibleTranslationProvider",
+                 "unit_review": "OpenAICompatibleReviewProvider",
+                 "concept_generation": "OpenAICompatibleConceptGenerationProvider",
+                 "concept_check": "OpenAICompatibleConceptCheckProvider",
+                 "expression": "OpenAICompatibleEditorialSuggestionProvider",
+                 "concept_disambiguation": "OpenAICompatibleConceptResolutionProvider"}
+        for use_override in (False, True):
+            with self.subTest(use_override=use_override):
+                fixture = self.make_manager(provider="openai-compatible")
+                manager, unit_id, translator, reviewer, _ = fixture
+                manager.translation_provider = manager.review_provider = None
+                config = {"base_url": "http://127.0.0.1:9/v1", "api_key": "offline", "model": "unused"}
+                groups = {}
+                for group in set(tasks.values()):
+                    groups[group] = manager.api_settings.create_preset(group, {**config, "model": group})["preset_id"]
+                    manager.api_settings.set_group(group, groups[group])
+                for task in tasks:
+                    if use_override:
+                        preset_id = manager.api_settings.create_preset(task, {**config, "model": task})["preset_id"]
+                        manager.api_settings.set_task(task, preset_id)
+                fake = FakeQualityProvider()
+                with ExitStack() as stack:
+                    mocks = {task: stack.enter_context(patch("pipeline." + name, return_value={
+                        "unit_translation": translator, "unit_review": reviewer,
+                    }.get(task, fake))) for task, name in names.items()}
+                    self.begin(fixture)
+                    self.finish(fixture)
+                    self.assertEqual(manager.editorial_suggestions(unit_id)["status"], "ok")
+                    for task, mock in mocks.items():
+                        expected = task if use_override else tasks[task]
+                        self.assertTrue(mock.called, task)
+                        self.assertEqual([call.kwargs["config"].model for call in mock.call_args_list],
+                                         [expected] * (2 if task.startswith("unit_") else 1))
+
+    def test_partial_unit_injection_still_constructs_real_defaults_for_both_stages(self):
+        fixture = self.make_manager(provider="openai-compatible")
+        manager, _, translator, reviewer, _ = fixture
+        manager.review_provider = None
+        with patch("pipeline.OpenAICompatibleTranslationProvider", return_value=object()) as default_translation, \
+                patch("pipeline.OpenAICompatibleReviewProvider", return_value=reviewer) as default_review:
+            self.begin(fixture)
+            self.finish(fixture)
+        self.assertEqual(default_translation.call_count, 2)
+        self.assertEqual(default_review.call_count, 2)
+        self.assertEqual(len(translator.requests), 1)
+
+    def test_partial_quality_injection_uses_shared_fake_and_freezes_injected_tuple(self):
+        fixture = self.make_manager(provider="openai-compatible")
+        manager, unit_id, _, _, _ = fixture
+        self.begin(fixture)
+        self.finish(fixture)
+        manager.quality_check_provider = object()
+        fake = FakeQualityProvider()
+
+        def fake_constructor():
+            # This change is deliberately too late for the original tuple.
+            manager.quality_editorial_provider = object()
+            return fake
+
+        with patch("pipeline.FakeQualityProvider", side_effect=fake_constructor) as default_fake, ExitStack() as stack:
+            real_defaults = [stack.enter_context(patch("pipeline." + name)) for name in (
+                "OpenAICompatibleConceptGenerationProvider", "OpenAICompatibleConceptCheckProvider",
+                "OpenAICompatibleEditorialSuggestionProvider", "OpenAICompatibleConceptResolutionProvider")]
+            result = manager.editorial_suggestions(unit_id)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(default_fake.call_count, 1)
+        for mock in real_defaults:
+            mock.assert_not_called()
+
+    def test_falsey_unit_injection_falls_back_to_default(self):
+        class FalseyProvider(ControlledProvider):
+            def __bool__(self):
+                return False
+
+        fixture = self.make_manager()
+        manager, _, translator, _, _ = fixture
+        falsey = FalseyProvider(translation_result)
+        manager.translation_provider = falsey
+        with patch("pipeline.DemoTranslationProvider", return_value=translator):
+            self.begin(fixture)
+            self.finish(fixture)
+        self.assertFalse(falsey.entered.is_set())
+
+    def test_unit_injection_is_read_after_default_constructor_returns(self):
+        fixture = self.make_manager()
+        manager, _, translator, reviewer, _ = fixture
+        original_injected = ControlledProvider(translation_result)
+        manager.translation_provider = original_injected
+
+        def construct_review():
+            manager.translation_provider = translator
+            return reviewer
+
+        with patch("pipeline.DemoReviewProvider", side_effect=construct_review):
+            self.begin(fixture)
+            self.finish(fixture)
+        self.assertFalse(original_injected.entered.is_set())
 
 
 if __name__ == "__main__":

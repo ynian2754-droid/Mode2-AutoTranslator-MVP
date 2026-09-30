@@ -55,7 +55,7 @@ from core.importers import SourceImporter
 from core.pdf_exporter import PdfExportError, PdfExporter
 from core.pdf_fonts import PDF_MATH_FONT_PATH, load_pdf_fonts
 from core.pdf_glyph_support import scan_text_glyphs, unavailable_scan
-from core import pipeline_output, unit_validation
+from core import pipeline_output, provider_routing, unit_validation
 from core.project_factory import DEFAULT_SAMPLE_SOURCE, ProjectFactory, empty_output_state
 from core.segmenter import DEFAULT_TARGET_WORDS, MarkdownSegmenter, validate_target_words
 from core.storage import ProjectStore
@@ -167,12 +167,14 @@ class PipelineManager:
         self.assembler = DocumentAssembler(self.runtime_dir)
         self.api_settings = api_settings or ApiSettingsStore(api_settings_dir or self.runtime_dir)
         self.lock = threading.RLock()
-        self.translation_provider = translation_provider
-        self.review_provider = review_provider
-        self.quality_generation_provider = quality_generation_provider
-        self.quality_check_provider = quality_check_provider
-        self.quality_editorial_provider = quality_editorial_provider
-        self.quality_resolution_provider = quality_resolution_provider
+        self._provider_bindings = provider_routing.ProviderBindings(
+            translation_provider=translation_provider,
+            review_provider=review_provider,
+            quality_generation_provider=quality_generation_provider,
+            quality_check_provider=quality_check_provider,
+            quality_editorial_provider=quality_editorial_provider,
+            quality_resolution_provider=quality_resolution_provider,
+        )
         # batch_id -> source signature, only to make a duplicate network retry
         # idempotent. Not a queue, not a scheduler.
         self._quality_batch_inflight: dict[str, str] = {}
@@ -206,6 +208,54 @@ class PipelineManager:
         self._glyph_precheck_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
         self._closed = False
         self.state = self._load_state()
+
+    @property
+    def translation_provider(self) -> Any | None:
+        return self._provider_bindings.translation_provider
+
+    @translation_provider.setter
+    def translation_provider(self, value: Any | None) -> None:
+        self._provider_bindings.translation_provider = value
+
+    @property
+    def review_provider(self) -> Any | None:
+        return self._provider_bindings.review_provider
+
+    @review_provider.setter
+    def review_provider(self, value: Any | None) -> None:
+        self._provider_bindings.review_provider = value
+
+    @property
+    def quality_generation_provider(self) -> Any | None:
+        return self._provider_bindings.quality_generation_provider
+
+    @quality_generation_provider.setter
+    def quality_generation_provider(self, value: Any | None) -> None:
+        self._provider_bindings.quality_generation_provider = value
+
+    @property
+    def quality_check_provider(self) -> Any | None:
+        return self._provider_bindings.quality_check_provider
+
+    @quality_check_provider.setter
+    def quality_check_provider(self, value: Any | None) -> None:
+        self._provider_bindings.quality_check_provider = value
+
+    @property
+    def quality_editorial_provider(self) -> Any | None:
+        return self._provider_bindings.quality_editorial_provider
+
+    @quality_editorial_provider.setter
+    def quality_editorial_provider(self, value: Any | None) -> None:
+        self._provider_bindings.quality_editorial_provider = value
+
+    @property
+    def quality_resolution_provider(self) -> Any | None:
+        return self._provider_bindings.quality_resolution_provider
+
+    @quality_resolution_provider.setter
+    def quality_resolution_provider(self, value: Any | None) -> None:
+        self._provider_bindings.quality_resolution_provider = value
 
     @staticmethod
     def _same_automatic_decision(
@@ -1189,27 +1239,17 @@ class PipelineManager:
     def _provider_pair(self) -> tuple[Any, Any]:
         with self.lock:
             provider_name = str(self.state["config"].get("provider") or "demo")
-        if self.translation_provider is not None or self.review_provider is not None:
-            if provider_name == "openai-compatible":
-                default_translation = OpenAICompatibleTranslationProvider(
-                    config=self.api_settings.config_for_task("unit_translation")
-                )
-                default_review = OpenAICompatibleReviewProvider(
-                    config=self.api_settings.config_for_task("unit_review")
-                )
-            else:
-                default_translation = DemoTranslationProvider()
-                default_review = DemoReviewProvider()
-            return (
-                self.translation_provider or default_translation,
-                self.review_provider or default_review,
-            )
-        if provider_name == "openai-compatible":
-            return (
-                OpenAICompatibleTranslationProvider(config=self.api_settings.config_for_task("unit_translation")),
-                OpenAICompatibleReviewProvider(config=self.api_settings.config_for_task("unit_review")),
-            )
-        return DemoTranslationProvider(), DemoReviewProvider()
+        return provider_routing.resolve_unit_pair(
+            provider_name,
+            self._provider_bindings,
+            self.api_settings,
+            provider_routing.UnitFactories(
+                OpenAICompatibleTranslationProvider,
+                OpenAICompatibleReviewProvider,
+                DemoTranslationProvider,
+                DemoReviewProvider,
+            ),
+        )
 
     def _ensure_executor_locked(self) -> ThreadPoolExecutor:
         self._ensure_open_locked()
@@ -3014,16 +3054,17 @@ class PipelineManager:
         )
         with self.lock:
             provider_name = str(self.state.get("config", {}).get("provider") or "demo")
-        if provider_name != "openai-compatible" or any(p is not None for p in injected):
-            # A partially injected set means an offline harness; the missing
-            # channels fall back to the double instead of a real HTTP client.
-            fake = FakeQualityProvider()
-            return tuple(provider if provider is not None else fake for provider in injected)
-        return (
-            OpenAICompatibleConceptGenerationProvider(config=self.api_settings.config_for_task("concept_generation")),
-            OpenAICompatibleConceptCheckProvider(config=self.api_settings.config_for_task("concept_check")),
-            OpenAICompatibleEditorialSuggestionProvider(config=self.api_settings.config_for_task("expression")),
-            OpenAICompatibleConceptResolutionProvider(config=self.api_settings.config_for_task("concept_disambiguation")),
+        return provider_routing.resolve_quality_channels(
+            provider_name,
+            injected,
+            self.api_settings,
+            provider_routing.QualityFactories(
+                OpenAICompatibleConceptGenerationProvider,
+                OpenAICompatibleConceptCheckProvider,
+                OpenAICompatibleEditorialSuggestionProvider,
+                OpenAICompatibleConceptResolutionProvider,
+                FakeQualityProvider,
+            ),
         )
 
     def _quality_commit_locked(
