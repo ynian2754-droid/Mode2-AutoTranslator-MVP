@@ -30,6 +30,7 @@ from core.quality_cards import (
     QUALITY_CARD_ACTIONS,
     QualityCards,
 )
+from core import quality_recovery, quality_requests
 from core.quality_progress import PrepareProgress
 from core.quality_runtime import QualityRuntime
 from core.quality_state import commit_quality_support, quality_unit_sources
@@ -305,53 +306,8 @@ class PipelineManager:
                 return False
         return True
 
-    @staticmethod
-    def _approved_expressions(support: Mapping[str, Any]) -> tuple[str, ...]:
-        """Every expression a human-approved card currently carries, sorted."""
 
-        return tuple(
-            sorted(
-                {
-                    expression
-                    for card in (support.get("cards") or {}).values()
-                    for expression in ((card.get("approved") or {}).get("expressions") or [])
-                }
-            )
-        )
 
-    @staticmethod
-    def _concept_unit_refs(units: Sequence[Mapping[str, Any]]) -> tuple[ConceptUnitRef, ...]:
-        """One ``ConceptUnitRef`` per unit, using the unit's own source binding."""
-
-        return tuple(
-            ConceptUnitRef(
-                unit_id=str(unit["id"]),
-                source_text=str(unit.get("source") or ""),
-                source_sha256=str(unit.get("source_sha256") or ""),
-            )
-            for unit in units
-        )
-
-    @staticmethod
-    def _concept_unit_refs_from_sources(
-        unit_ids: Sequence[str],
-        unit_sources: Mapping[str, tuple[str, str]],
-    ) -> tuple[ConceptUnitRef, ...]:
-        """One ``ConceptUnitRef`` per known unit id, read from a source mapping.
-
-        An id the project no longer holds is skipped: a request may only cite
-        units that still exist.
-        """
-
-        return tuple(
-            ConceptUnitRef(
-                unit_id=unit_id,
-                source_text=str((unit_sources.get(unit_id) or ("", ""))[0]),
-                source_sha256=str((unit_sources.get(unit_id) or ("", ""))[1]),
-            )
-            for unit_id in unit_ids
-            if unit_id in unit_sources
-        )
 
     @staticmethod
     def _resolve_explicit_target_words(
@@ -2387,7 +2343,7 @@ class PipelineManager:
             if not targets:
                 raise PipelineError("没有可扫描的单元。")
             support = normalize_quality_support(self.state.get("quality_support"))
-            approved_expressions = self._approved_expressions(support)
+            approved_expressions = quality_requests.approved_expressions(support)
         plan = planned_batches(
             targets,
             max_source_words=effective_source_words,
@@ -2456,88 +2412,8 @@ class PipelineManager:
             )
         return limit
 
-    def _assessment_context_payload(
-        self,
-        candidate: Mapping[str, Any],
-        *,
-        unit_sources: Mapping[str, tuple[str, str]],
-        model: str,
-    ) -> dict[str, Any]:
-        """The verification identity the program writes, never the model."""
 
-        fingerprint = ""
-        hashes: dict[str, str] = {}
-        try:
-            normalized = normalize_card_content(candidate, unit_sources=unit_sources)
-        except Exception:  # pragma: no cover - a rejected candidate fails earlier
-            normalized = {}
-        if normalized:
-            try:
-                fingerprint = content_signature(normalized)
-            except Exception:  # pragma: no cover - signature is total for mappings
-                fingerprint = ""
-            for item in normalized.get("evidence") or []:
-                unit_id = str(item.get("unit_id") or "")
-                if unit_id:
-                    hashes[unit_id] = str(item.get("source_sha256") or "")
-        return {
-            "content_fingerprint": fingerprint,
-            "source_hashes": hashes,
-            "prompt_version": PROMPT_VERSION,
-            # A non-secret identifier only: never a key or a credentialed URL.
-            "model": str(model or ""),
-        }
 
-    @staticmethod
-    def _batch_row_copy(
-        support: Mapping[str, Any],
-        batch_id: str,
-    ) -> dict[str, Any] | None:
-        """A detached copy of one stored batch row, or ``None`` when absent.
-
-        Read-only callers use this so a later write to the snapshot cannot
-        change what they already inspected. A writer that must mutate the row
-        in place reads the live row itself.
-        """
-
-        return next(
-            (
-                dict(item)
-                for item in (support.get("batches") or [])
-                if str(item.get("batch_id")) == str(batch_id)
-            ),
-            None,
-        )
-
-    def _stored_check_payload(
-        self,
-        check: Mapping[str, Any],
-        candidate: Mapping[str, Any],
-        *,
-        unit_sources: Mapping[str, tuple[str, str]],
-        model: str,
-    ) -> dict[str, Any]:
-        """One model verdict plus the program-written verification identity.
-
-        The structured question result travels with the check; dropping it here
-        would silently turn a resolved question back into a block. The identity
-        is always written by the program, never taken from the model.
-        """
-
-        payload = {
-            "verdict": check["verdict"],
-            "reasons": check["reasons"],
-            "notes": check.get("notes") or "",
-        }
-        assessment = check.get("automation_assessment")
-        if isinstance(assessment, dict):
-            payload["automation_assessment"] = assessment
-        payload["assessment_context"] = self._assessment_context_payload(
-            candidate,
-            unit_sources=unit_sources,
-            model=model,
-        )
-        return payload
 
     def _quality_providers(self) -> tuple[Any, Any, Any, Any]:
         """The four concept channels: generation, check, editorial, resolution.
@@ -2730,7 +2606,7 @@ class PipelineManager:
             # ``mode`` is the scan/prepare execution lane; it is not a
             # substitute for the project's current reference-mode identity.
             frozen_mode = concept_automation.reference_mode(self.state.get("project"))
-            stored_batch = self._batch_row_copy(support, batch_id)
+            stored_batch = quality_recovery.batch_row_copy(support, batch_id)
             if stored_batch is not None:
                 self._quality_runtime.batch_inflight.pop(batch_id, None)
                 if [str(item) for item in stored_batch.get("unit_ids") or []] != wanted:
@@ -2752,7 +2628,7 @@ class PipelineManager:
                         if mode == "automatic" and isinstance(prepare_record, Mapping)
                         else ""
                     )
-                    approved_expressions = self._approved_expressions(support)
+                    approved_expressions = quality_requests.approved_expressions(support)
                     retry_inputs = None
                 else:
                     if str(stored_batch.get("check_status") or "") != "failed":
@@ -2773,14 +2649,14 @@ class PipelineManager:
                     if mode == "automatic" and isinstance(prepare_record, Mapping)
                     else ""
                 )
-                approved_expressions = self._approved_expressions(support)
+                approved_expressions = quality_requests.approved_expressions(support)
 
         if retry_inputs is not None:
             return self._retry_quality_check_locked(
                 batch_id, retry_inputs, retry_close=retry_close
             )
 
-        refs = self._concept_unit_refs(selected)
+        refs = quality_requests.concept_unit_refs(selected)
         generation, checker, _editorial, _resolution = self._quality_providers()
         # Counted at the call site, never inferred from the outcome: these are
         # the provider invocations this request really made. A provider that
@@ -3030,7 +2906,7 @@ class PipelineManager:
                             unit_ids=[ref.unit_id for ref in refs],
                             now_iso_value=now_iso(),
                             check=(
-                                self._stored_check_payload(
+                                quality_requests.stored_check_payload(
                                     check,
                                     candidate,
                                     unit_sources=unit_sources,
@@ -3049,7 +2925,7 @@ class PipelineManager:
                             unit_ids=[ref.unit_id for ref in refs],
                             now_iso_value=now_iso(),
                             check=(
-                                self._stored_check_payload(
+                                quality_requests.stored_check_payload(
                                     check,
                                     candidate,
                                     unit_sources=unit_sources,
@@ -3094,7 +2970,8 @@ class PipelineManager:
             created_count = sum(1 for row in saved if row["outcome"] == "created")
             updated_count = sum(1 for row in saved if row["outcome"] == "updated")
             retry_record = (
-                self._batch_retry_record(
+                quality_recovery.batch_retry_record(
+                    clock=lambda: now_iso(),
                     stage="check",
                     mode=mode,
                     prepare_id=owning_prepare,
@@ -3153,8 +3030,9 @@ class PipelineManager:
             # A hand retry closes its own record — and promotes the prepare rows
             # it recovered — inside this same commit.
             retry_recorded = (
-                self._apply_retry_close_locked(
+                quality_recovery.apply_retry_close(
                     support,
+                    clock=lambda: now_iso(),
                     batch_id=batch_id,
                     close=retry_close,
                     check_status=check_status,
@@ -3188,50 +3066,6 @@ class PipelineManager:
                 "approved_version": support["approved_version"],
             }
 
-    @staticmethod
-    def _batch_retry_record(
-        *,
-        stage: str,
-        mode: str,
-        prepare_id: str,
-        units: Sequence[Mapping[str, Any]],
-        cards: Sequence[Mapping[str, Any]] = (),
-        state: str,
-        attempt_count: int,
-        last_error: str,
-    ) -> dict[str, Any]:
-        """The recovery identity frozen onto one batch record.
-
-        Only what a later hand retry needs: which step failed, which mode and
-        prepare produced it, the source binding it was made for, and (for a
-        failed check) the card revisions it was made for. No prompt, source text
-        or model answer is copied here.
-        """
-
-        return {
-            "stage": str(stage),
-            "mode": str(mode),
-            "prepare_id": str(prepare_id or ""),
-            "source_bindings": [
-                {
-                    "unit_id": str(unit.get("id") or ""),
-                    "source_sha256": str(unit.get("source_sha256") or ""),
-                }
-                for unit in units
-            ],
-            "card_bindings": [
-                {
-                    "card_id": str(card.get("id") or ""),
-                    "draft_revision": int(card.get("draft_revision") or 0),
-                    "content_fingerprint": concept_automation._content_fingerprint(card),
-                }
-                for card in cards
-            ],
-            "state": str(state),
-            "attempt_count": max(0, int(attempt_count or 0)),
-            "last_error": str(last_error or "")[:400],
-            "updated_at": now_iso(),
-        }
 
     def _record_failed_generation_locked(
         self,
@@ -3254,8 +3088,9 @@ class PipelineManager:
         old_support = copy.deepcopy(self.state.get("quality_support"))
         old_events = copy.deepcopy(self.state.get("events") or [])
         support = normalize_quality_support(self.state.get("quality_support"))
-        existing = self._batch_row_copy(support, batch_id) or {}
-        record = self._batch_retry_record(
+        existing = quality_recovery.batch_row_copy(support, batch_id) or {}
+        record = quality_recovery.batch_retry_record(
+            clock=lambda: now_iso(),
             stage="generation",
             mode=mode,
             prepare_id=prepare_id,
@@ -3312,7 +3147,7 @@ class PipelineManager:
                 support.get("revision") or 0
             ):
                 raise ConflictError("概念数据已经变化，请刷新后重试。")
-            stored = self._batch_row_copy(support, batch_id)
+            stored = quality_recovery.batch_row_copy(support, batch_id)
             if stored is None:
                 raise ConflictError("找不到这个批次的记录，请刷新后重试。")
             mode = concept_automation.reference_mode(self.state.get("project"))
@@ -3371,7 +3206,7 @@ class PipelineManager:
                     for item in (stored.get("retry") or {}).get("card_bindings") or []
                 }
                 for active_id in self._quality_runtime.retry_inflight:
-                    active = self._batch_row_copy(support, active_id) or {}
+                    active = quality_recovery.batch_row_copy(support, active_id) or {}
                     active_retry = active.get("retry") or {}
                     active_units = {
                         str(item.get("unit_id") or "")
@@ -3385,7 +3220,8 @@ class PipelineManager:
                         raise ConflictError("这批与正在恢复的批次涉及同一单元或候选，请等待后再重试。")
             attempt_count = int(descriptor["attempt_count"]) + 1
             frozen = normalize_batch_retry(stored.get("retry")) or {}
-            running = self._batch_retry_record(
+            running = quality_recovery.batch_retry_record(
+                clock=lambda: now_iso(),
                 stage=stage,
                 mode=str(descriptor["mode"]),
                 prepare_id=str(frozen.get("prepare_id") or ""),
@@ -3610,8 +3446,9 @@ class PipelineManager:
             if target is None:
                 return False
             frozen = normalize_batch_retry(target.get("retry")) or {}
-            target["retry"] = self._retry_record_update(
+            target["retry"] = quality_recovery.retry_record_update(
                 frozen,
+                clock=lambda: now_iso(),
                 state=state,
                 attempt_count=attempt_count,
                 last_error=last_error,
@@ -3621,136 +3458,13 @@ class PipelineManager:
             self._quality_commit_locked(support, old_support=old_support, old_events=old_events)
             return True
 
-    @staticmethod
-    def _retry_record_update(
-        frozen: Mapping[str, Any],
-        *,
-        state: str,
-        attempt_count: int,
-        last_error: str,
-        stage: str = "",
-    ) -> dict[str, Any]:
-        """The stored shape of one recovery record after an attempt ended."""
 
-        hint = str(last_error or "").strip()
-        return {
-            **frozen,
-            "stage": str(frozen.get("stage") or stage or "check"),
-            "state": str(state),
-            "attempt_count": int(attempt_count),
-            # A finished recovery clears the current error; the original one
-            # stays in the record this update started from (and in the events).
-            "last_error": hint
-            or ("" if state == "completed" else str(frozen.get("last_error") or "")),
-            "updated_at": now_iso(),
-        }
-
-    def _apply_retry_close_locked(
-        self,
-        support: dict[str, Any],
-        *,
-        batch_id: str,
-        close: Mapping[str, Any],
-        check_status: str,
-        check_error: str,
-    ) -> bool:
-        """Write the hand-retry record — and its prepare sync — into one snapshot.
-
-        The caller runs this in the very locked block that stores the recovered
-        result, so the verdict, the recovery state and the prepare rows it
-        recovered share one save. A failed check promotes nothing and keeps the
-        concrete reason; only a completed one promotes the frozen units.
-        Returns whether the batch row was there to update.
-        """
-
-        target = next(
-            (
-                item
-                for item in (support.get("batches") or [])
-                if str(item.get("batch_id")) == batch_id
-            ),
-            None,
-        )
-        if target is None:
-            return False
-        frozen = normalize_batch_retry(target.get("retry")) or {}
-        completed = str(check_status or "") == "completed"
-        target["retry"] = self._retry_record_update(
-            frozen,
-            state="completed" if completed else "failed",
-            attempt_count=int(close.get("attempt_count") or 0),
-            last_error="" if completed else (str(check_error or "").strip() or "独立检查未完成。"),
-            stage=str(close.get("stage") or ""),
-        )
-        prepare_id = str(frozen.get("prepare_id") or "")
-        units = [str(unit_id) for unit_id in close.get("units") or []]
-        if completed and prepare_id and units:
-            self._sync_prepare_rows(
-                support, batch_id=batch_id, units=units, prepare_id=prepare_id
-            )
-        return True
 
     def _prepare_reference_refresh_required(self) -> bool:
         support = normalize_quality_support(self.state.get("quality_support"))
         record = concept_automation.automation_of(support).get("prepare")
         return bool(isinstance(record, Mapping) and record.get("reference_refresh_required"))
 
-    @staticmethod
-    def _sync_prepare_rows(
-        support: dict[str, Any],
-        *,
-        batch_id: str,
-        units: Sequence[str],
-        prepare_id: str,
-    ) -> bool:
-        """Promote the matching prepare rows inside one support snapshot.
-
-        Only the current prepare's rows for exactly these units are touched, and
-        only while they are still ``failed``: the original error entries stay as
-        history, the group judgments, decisions and frozen references are
-        untouched, and the record is never rewritten into ``complete``.
-        ``reference_refresh_required`` only asks the operator to re-preview.
-        Returns whether anything changed.
-        """
-
-        record = concept_automation.automation_of(support).get("prepare")
-        if not isinstance(record, Mapping) or str(record.get("prepare_id") or "") != str(
-            prepare_id
-        ):
-            # The prepare was replaced meanwhile: resuming across records is out
-            # of scope, and the recovery itself is still valid.
-            return False
-        batch_unit_ids = {str(unit_id) for unit_id in units}
-        current = copy.deepcopy(dict(record))
-        touched = False
-        for row in current.get("unit_results") or []:
-            if str(row.get("unit_id")) not in batch_unit_ids:
-                continue
-            if str(row.get("status") or "") != "failed":
-                continue
-            row["status"] = "completed"
-            row["batch_id"] = batch_id
-            row["reason"] = ""
-            touched = True
-        if not touched:
-            return False
-        counts = current.setdefault("counts", {})
-        counts["failed_units"] = max(0, int(counts.get("failed_units") or 0) - len(batch_unit_ids))
-        # A run whose every failure has now been recovered by hand stops being
-        # "failed" — otherwise the next preview would refuse to reuse rows that
-        # are genuinely finished. It is never promoted to "complete": the record
-        # keeps its history and the operator still has to re-preview, which is
-        # what the marker below says.
-        if not int(counts.get("failed_units") or 0) and str(
-            current.get("status") or ""
-        ) not in concept_automation.REUSABLE_PREPARE_STATUSES:
-            current["status"] = "partial"
-        current["reference_refresh_required"] = True
-        current["reference_refresh_required_at"] = now_iso()
-        automation = concept_automation.automation_of(support)
-        automation["prepare"] = current
-        support["automation"] = automation
-        return True
 
     def _retry_quality_check_locked(
         self,
@@ -3778,7 +3492,7 @@ class PipelineManager:
                 for unit in selected
             ]
             signature = repr(signatures)
-            refs = self._concept_unit_refs(selected)
+            refs = quality_requests.concept_unit_refs(selected)
             cards = [
                 card
                 for card in support.get("cards", {}).values()
@@ -3851,7 +3565,7 @@ class PipelineManager:
                 )
                 checks = [
                     (
-                        self._stored_check_payload(
+                        quality_requests.stored_check_payload(
                             check,
                             candidates[index],
                             unit_sources=unit_sources,
@@ -3925,7 +3639,7 @@ class PipelineManager:
                     checks=checks,
                     now_iso_value=now_iso(),
                 )
-            stored_batch = self._batch_row_copy(support, batch_id)
+            stored_batch = quality_recovery.batch_row_copy(support, batch_id)
             if stored_batch is not None:
                 stored_batch["check_status"] = check_status
                 if check_status == "completed":
@@ -3947,8 +3661,9 @@ class PipelineManager:
             # the verdict: a partial success — verdict saved, recovery state or
             # prepare rows missing — is not expressible here.
             retry_recorded = (
-                self._apply_retry_close_locked(
+                quality_recovery.apply_retry_close(
                     support,
+                    clock=lambda: now_iso(),
                     batch_id=batch_id,
                     close=retry_close,
                     check_status=check_status,
@@ -4922,7 +4637,7 @@ class PipelineManager:
                 return f"卡片 {card_id} 已经有人工内容，自动结果不再写入。"
             if int(card.get("draft_revision") or 0) != revision:
                 return f"卡片 {card_id} 的草稿版本已经变化。"
-            live_fingerprint = self._assessment_context_payload(
+            live_fingerprint = quality_requests.assessment_context_payload(
                 dict(card.get("draft") or {}),
                 unit_sources=live_sources,
                 model="",
@@ -5361,7 +5076,7 @@ class PipelineManager:
                         reason = "identity"
             if not reason:
                 continue
-            fingerprint = self._assessment_context_payload(
+            fingerprint = quality_requests.assessment_context_payload(
                 dict(draft), unit_sources=unit_sources, model=model
             )["content_fingerprint"]
             if not fingerprint:
@@ -5437,7 +5152,7 @@ class PipelineManager:
             # request or answered in an unbounded run: they are recorded as work
             # the next confirmation carries.
             unit_ids = sorted({unit_id for item in items for unit_id in item["unit_ids"]})
-            refs = self._concept_unit_refs_from_sources(unit_ids, unit_sources)
+            refs = quality_requests.concept_unit_refs_from_sources(unit_ids, unit_sources)
             project_id = str(self.state.get("project", {}).get("id") or "")
             frozen = {
                 item["card_id"]: (item["draft_revision"], item["content_fingerprint"])
@@ -5544,7 +5259,7 @@ class PipelineManager:
                 if int(card.get("draft_revision") or 0) != int(item["draft_revision"]):
                     mismatch = "重查结果对应的草稿版本已经变化。"
                     break
-                live_fingerprint = self._assessment_context_payload(
+                live_fingerprint = quality_requests.assessment_context_payload(
                     dict(card.get("draft") or {}), unit_sources=unit_sources_now, model=""
                 )["content_fingerprint"]
                 if not live_fingerprint or live_fingerprint != item["content_fingerprint"]:
@@ -5562,7 +5277,7 @@ class PipelineManager:
                 rows.append(
                     {
                         **dict(check),
-                        "assessment_context": self._assessment_context_payload(
+                        "assessment_context": quality_requests.assessment_context_payload(
                             dict(card.get("draft") or {}),
                             unit_sources=unit_sources_now,
                             model=str(getattr(checker, "model", "") or ""),
@@ -5680,7 +5395,7 @@ class PipelineManager:
                 if assessment is None or not assessment.get("lookup_expressions"):
                     continue
                 check = card.get("check") if isinstance(card.get("check"), Mapping) else None
-                fingerprint = self._assessment_context_payload(
+                fingerprint = quality_requests.assessment_context_payload(
                     dict(draft), unit_sources=unit_sources, model=""
                 )["content_fingerprint"]
                 if not fingerprint:
@@ -5912,7 +5627,7 @@ class PipelineManager:
                     },
                 )
                 return
-            refs = self._concept_unit_refs_from_sources(request_units, unit_sources)
+            refs = quality_requests.concept_unit_refs_from_sources(request_units, unit_sources)
             project_id = str(self.state.get("project", {}).get("id") or "")
             frozen_hashes = {
                 unit_id: str((unit_sources.get(unit_id) or ("", ""))[1])
@@ -6075,7 +5790,7 @@ class PipelineManager:
                 ):
                     mismatch = "补查期间草稿版本已经变化。"
                     break
-                live_fingerprint = self._assessment_context_payload(
+                live_fingerprint = quality_requests.assessment_context_payload(
                     dict(card.get("draft") or {}), unit_sources=unit_sources_now, model=""
                 )["content_fingerprint"]
                 if not live_fingerprint or live_fingerprint != item["content_fingerprint"]:
@@ -6093,7 +5808,7 @@ class PipelineManager:
                 rows.append(
                     {
                         **dict(check),
-                        "assessment_context": self._assessment_context_payload(
+                        "assessment_context": quality_requests.assessment_context_payload(
                             dict(card.get("draft") or {}),
                             unit_sources=unit_sources_now,
                             model=str(getattr(checker, "model", "") or ""),
@@ -7756,7 +7471,7 @@ class PipelineManager:
             if isinstance(value, str) and value.strip()
         )
         support = normalize_quality_support(self.state.get("quality_support"))
-        approved_expressions = self._approved_expressions(support)
+        approved_expressions = quality_requests.approved_expressions(support)
         # Hand the editorial model the actual approved card content (meaning,
         # acceptable translations, ...) frozen at a concrete version, not just a
         # bare expression list. Selection is bounded by the same character
