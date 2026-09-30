@@ -30,6 +30,8 @@ from core.quality_cards import (
     QUALITY_CARD_ACTIONS,
     QualityCards,
 )
+from core.quality_progress import PrepareProgress
+from core.quality_runtime import QualityRuntime
 from core.quality_state import commit_quality_support, quality_unit_sources
 from core.quality_support import (
     DEFAULT_SCAN_SOURCE_WORDS,
@@ -190,22 +192,10 @@ class PipelineManager:
             quality_editorial_provider=quality_editorial_provider,
             quality_resolution_provider=quality_resolution_provider,
         )
-        # batch_id -> source signature, only to make a duplicate network retry
-        # idempotent. Not a queue, not a scheduler.
-        self._quality_batch_inflight: dict[str, str] = {}
-        #: In-flight manual recoveries. These are process-local concurrency
-        #: markers, never a task store; each batch's retry record is durable.
-        self._quality_retry_inflight: set[str] = set()
-        self._quality_retry_parallel: set[str] = set()
-        # prepare_id -> the project/revision/mode signature the run was frozen
-        # with. It makes "one active prepare per project" real and rejects late
-        # results after a project switch, a mode change or a close. Still not a
-        # queue: one entry, no background execution.
-        self._prepare_inflight: dict[str, str] = {}
-        # One in-memory progress snapshot for the current confirmed prepare.
-        # It is intentionally not persisted: a restarted process has no live
-        # worker and the durable prepare record is normalized to interrupted.
-        self._prepare_progress: dict[str, Any] | None = None
+        self._quality_runtime = QualityRuntime()
+        self._quality_progress = PrepareProgress(
+            self._project_state, self._quality_runtime, clock=lambda: now_iso()
+        )
         self._executor: ThreadPoolExecutor | None = None
         self._executor_max_concurrency: int | None = None
         self._active_unit_ids: set[str] = set()
@@ -2625,7 +2615,7 @@ class PipelineManager:
             with self.lock:
                 if self._closed:
                     raise ConflictError("项目已关闭，不再发起下一轮模型修正。")
-                if self._quality_batch_inflight.get(batch_id) != signature:
+                if self._quality_runtime.batch_inflight.get(batch_id) != signature:
                     raise ConflictError("该批次已被更新的执行取代，不再发起下一轮模型修正。")
                 if frozen_mode and concept_automation.reference_mode(
                     self.state.get("project")
@@ -2669,7 +2659,7 @@ class PipelineManager:
             kind=kind,
             before_attempt=lambda round_no, api_calls: verify(),
             on_progress=(
-                self._prepare_progress_repair_callback(prepare_id, progress_stage, batch_id)
+                self._quality_progress.repair_callback(prepare_id, progress_stage, batch_id)
                 if prepare_id and progress_stage
                 else None
             ),
@@ -2710,9 +2700,9 @@ class PipelineManager:
         with self.lock:
             self._ensure_open_locked()
             self._validate_expected_project_id_locked(expected_project_id)
-            if self._quality_retry_inflight and batch_id not in self._quality_retry_inflight:
+            if self._quality_runtime.retry_inflight and batch_id not in self._quality_runtime.retry_inflight:
                 raise ConflictError(
-                    f"批次 {sorted(self._quality_retry_inflight)[0]} 正在恢复中，请等待结束再扫描。"
+                    f"批次 {sorted(self._quality_runtime.retry_inflight)[0]} 正在恢复中，请等待结束再扫描。"
                 )
             units = {
                 str(unit.get("id")): unit
@@ -2730,7 +2720,7 @@ class PipelineManager:
                 for unit in selected
             ]
             signature = repr(signatures)
-            previous = self._quality_batch_inflight.get(batch_id)
+            previous = self._quality_runtime.batch_inflight.get(batch_id)
             if previous == signature:
                 raise ConflictError(f"批次 {batch_id} 正在处理中，请勿重复提交。")
             if previous is not None and previous != signature:
@@ -2742,7 +2732,7 @@ class PipelineManager:
             frozen_mode = concept_automation.reference_mode(self.state.get("project"))
             stored_batch = self._batch_row_copy(support, batch_id)
             if stored_batch is not None:
-                self._quality_batch_inflight.pop(batch_id, None)
+                self._quality_runtime.batch_inflight.pop(batch_id, None)
                 if [str(item) for item in stored_batch.get("unit_ids") or []] != wanted:
                     raise ConflictError(f"批次 {batch_id} 的单元与已保存记录不一致，请重新规划。")
                 stored_stage = str((stored_batch.get("retry") or {}).get("stage") or "")
@@ -2752,7 +2742,7 @@ class PipelineManager:
                     # saved, so this is the first real generation for this batch
                     # rather than a duplicate submit. Its units still get no scan
                     # coverage from the failed attempt.
-                    self._quality_batch_inflight[batch_id] = signature
+                    self._quality_runtime.batch_inflight[batch_id] = signature
                     project_id = str(self.state.get("project", {}).get("id") or "")
                     prepare_record = concept_automation.automation_of(
                         normalize_quality_support(self.state.get("quality_support"))
@@ -2771,7 +2761,7 @@ class PipelineManager:
                     # retry path is the same network boundary as first-time scan.
                     retry_inputs = copy.deepcopy(selected)
             else:
-                self._quality_batch_inflight[batch_id] = signature
+                self._quality_runtime.batch_inflight[batch_id] = signature
                 project_id = str(self.state.get("project", {}).get("id") or "")
                 # Which prepare owns this batch, captured *before* the model call
                 # so a later failure is never attributed to a new generation.
@@ -2798,7 +2788,7 @@ class PipelineManager:
         generation_calls = 1
         progress_prepare_id = owning_prepare if mode == "automatic" else ""
         if progress_prepare_id:
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 progress_prepare_id,
                 "generation",
                 batch_id,
@@ -2828,11 +2818,11 @@ class PipelineManager:
             )
         except ContentRepairExhausted as exc:
             if progress_prepare_id:
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     progress_prepare_id, "generation", batch_id, "failed",
                     unit="batch", error=str(exc),
                 )
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     progress_prepare_id,
                     "check",
                     batch_id,
@@ -2841,7 +2831,7 @@ class PipelineManager:
                     label="候选生成失败，本批不进入独立检查",
                 )
             with self.lock:
-                self._quality_batch_inflight.pop(batch_id, None)
+                self._quality_runtime.batch_inflight.pop(batch_id, None)
             # A first-run exhaustion still needs a durable generation retry
             # record. A hand retry already has its running record; its outer
             # recovery path closes that record with this concrete error.
@@ -2859,11 +2849,11 @@ class PipelineManager:
             raise PipelineError(str(exc)) from exc
         except ConflictError:
             if progress_prepare_id:
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     progress_prepare_id, "generation", batch_id, "failed",
                     unit="batch", error="准备输入身份已变化。",
                 )
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     progress_prepare_id,
                     "check",
                     batch_id,
@@ -2875,15 +2865,15 @@ class PipelineManager:
             # Do not create a retry record for a result that was never valid for
             # this project; the caller must receive the conflict unchanged.
             with self.lock:
-                self._quality_batch_inflight.pop(batch_id, None)
+                self._quality_runtime.batch_inflight.pop(batch_id, None)
             raise
         except Exception as exc:
             if progress_prepare_id:
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     progress_prepare_id, "generation", batch_id, "failed",
                     unit="batch", error=str(exc),
                 )
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     progress_prepare_id,
                     "check",
                     batch_id,
@@ -2892,7 +2882,7 @@ class PipelineManager:
                     label="候选生成失败，本批不进入独立检查",
                 )
             with self.lock:
-                self._quality_batch_inflight.pop(batch_id, None)
+                self._quality_runtime.batch_inflight.pop(batch_id, None)
                 # The failure has to survive the request: without a record the
                 # operator could never find this batch again. It is written as a
                 # recovery record only, so scan coverage does not move.
@@ -2905,7 +2895,7 @@ class PipelineManager:
                 )
             raise PipelineError(f"概念候选生成失败：{exc}") from exc
         if progress_prepare_id:
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 progress_prepare_id, "generation", batch_id, "complete", unit="batch"
             )
 
@@ -2917,7 +2907,7 @@ class PipelineManager:
         if scan_result.candidates:
             check_calls = 1
             if progress_prepare_id:
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     progress_prepare_id,
                     "check",
                     batch_id,
@@ -2949,12 +2939,12 @@ class PipelineManager:
                 check_repair = check_result.repair
             except ConflictError:
                 if progress_prepare_id:
-                    self._prepare_progress_change(
+                    self._quality_progress.change(
                         progress_prepare_id, "check", batch_id, "failed",
                         unit="batch", error="准备输入身份已变化。",
                     )
                 with self.lock:
-                    self._quality_batch_inflight.pop(batch_id, None)
+                    self._quality_runtime.batch_inflight.pop(batch_id, None)
                 raise
             except Exception as exc:  # noqa: BLE001 - the concrete reason is kept
                 # A failed independent check must never be presented as
@@ -2965,17 +2955,17 @@ class PipelineManager:
                 check_error = str(exc)
                 checks = []
                 if progress_prepare_id:
-                    self._prepare_progress_change(
+                    self._quality_progress.change(
                         progress_prepare_id, "check", batch_id, "failed",
                         unit="batch", error=str(exc),
                     )
             else:
                 if progress_prepare_id:
-                    self._prepare_progress_change(
+                    self._quality_progress.change(
                         progress_prepare_id, "check", batch_id, "complete", unit="batch"
                     )
         elif progress_prepare_id:
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 progress_prepare_id,
                 "check",
                 batch_id,
@@ -2984,12 +2974,12 @@ class PipelineManager:
                 label="独立检查无需执行",
                 metadata={"batch_id": batch_id, "candidate_count": 0},
             )
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 progress_prepare_id, "check", batch_id, "not_required", unit="batch"
             )
 
         with self.lock:
-            self._quality_batch_inflight.pop(batch_id, None)
+            self._quality_runtime.batch_inflight.pop(batch_id, None)
             if self._closed:
                 raise ConflictError("当前项目管理器已关闭，不能保存概念候选。")
             if frozen_mode and concept_automation.reference_mode(
@@ -3341,22 +3331,22 @@ class PipelineManager:
             )
             if not descriptor["retryable"]:
                 raise ConflictError(descriptor["blocked_reason"] or "这个批次当前不能重试。")
-            if batch_id in self._quality_retry_inflight:
+            if batch_id in self._quality_runtime.retry_inflight:
                 raise ConflictError(f"批次 {batch_id} 正在恢复中，请勿重复提交。")
-            if self._quality_retry_inflight and (
+            if self._quality_runtime.retry_inflight and (
                 not allow_parallel
-                or self._quality_retry_inflight != self._quality_retry_parallel
+                or self._quality_runtime.retry_inflight != self._quality_runtime.retry_parallel
             ):
                 raise ConflictError(
-                    f"批次 {sorted(self._quality_retry_inflight)[0]} 正在恢复中，请等待结束再重试。"
+                    f"批次 {sorted(self._quality_runtime.retry_inflight)[0]} 正在恢复中，请等待结束再重试。"
                 )
-            if set(self._quality_batch_inflight) - self._quality_retry_inflight:
+            if set(self._quality_runtime.batch_inflight) - self._quality_runtime.retry_inflight:
                 raise ConflictError("概念扫描仍在进行，请等待结束再重试。")
             if isinstance(prepare_record, Mapping) and str(
                 prepare_record.get("status") or ""
             ) == "running":
                 raise ConflictError("自动准备仍在进行，请等待结束或先终止准备。")
-            if self._prepare_inflight:
+            if self._quality_runtime.prepare_inflight:
                 # The same exclusion the other direction enforces: a retry must
                 # not start behind a prepare that is already running, or the
                 # prepare's own batches would be refused mid-flight.
@@ -3374,13 +3364,13 @@ class PipelineManager:
             ]
             if not selected:
                 raise ConflictError("批次引用的单元已经不存在，请重新预览。")
-            if self._quality_retry_inflight:
+            if self._quality_runtime.retry_inflight:
                 requested_units = set(descriptor["units"])
                 requested_cards = {
                     str(item.get("card_id") or "")
                     for item in (stored.get("retry") or {}).get("card_bindings") or []
                 }
-                for active_id in self._quality_retry_inflight:
+                for active_id in self._quality_runtime.retry_inflight:
                     active = self._batch_row_copy(support, active_id) or {}
                     active_retry = active.get("retry") or {}
                     active_units = {
@@ -3429,9 +3419,9 @@ class PipelineManager:
             except Exception as exc:
                 # The attempt was never frozen: no model call may follow.
                 raise PipelineError(f"批次恢复开始前保存失败：{exc}") from exc
-            self._quality_retry_inflight.add(batch_id)
+            self._quality_runtime.retry_inflight.add(batch_id)
             if allow_parallel:
-                self._quality_retry_parallel.add(batch_id)
+                self._quality_runtime.retry_parallel.add(batch_id)
 
         # Phase 2 — outside the lock: the same call chain the batch used before.
         # The writer closes the recovery record and promotes the prepare rows it
@@ -3489,8 +3479,8 @@ class PipelineManager:
             recorded = bool(result.get("retry_recorded"))
         finally:
             with self.lock:
-                self._quality_retry_inflight.discard(batch_id)
-                self._quality_retry_parallel.discard(batch_id)
+                self._quality_runtime.retry_inflight.discard(batch_id)
+                self._quality_runtime.retry_parallel.discard(batch_id)
 
         if failure is not None:
             if isinstance(failure, OSError):
@@ -3821,7 +3811,7 @@ class PipelineManager:
             # origin is this batch_id.
             should_call = bool(candidates)
             if should_call:
-                self._quality_batch_inflight[batch_id] = signature
+                self._quality_runtime.batch_inflight[batch_id] = signature
 
         _generation, checker, _editorial, _resolution = self._quality_providers()
         check_repair: dict[str, Any] | None = None
@@ -3879,17 +3869,17 @@ class PipelineManager:
                 # or a card whose content moved on) is not a batch failure: it must
                 # reach the caller as a conflict and must not be written.
                 with self.lock:
-                    self._quality_batch_inflight.pop(batch_id, None)
+                    self._quality_runtime.batch_inflight.pop(batch_id, None)
                 raise
             except Exception as exc:  # noqa: BLE001 - reported, never silently emptied
                 with self.lock:
-                    self._quality_batch_inflight.pop(batch_id, None)
+                    self._quality_runtime.batch_inflight.pop(batch_id, None)
                 checks = []
                 check_status = "failed"
                 check_error = str(exc)
 
         with self.lock:
-            self._quality_batch_inflight.pop(batch_id, None)
+            self._quality_runtime.batch_inflight.pop(batch_id, None)
             if self._closed:
                 raise ConflictError("当前项目管理器已关闭，不能保存检查结果。")
             if frozen_mode and concept_automation.reference_mode(
@@ -4303,11 +4293,11 @@ class PipelineManager:
             running = automation.get("prepare")
             if isinstance(running, Mapping) and str(running.get("status") or "") == "running":
                 raise ConflictError("已有一个准备任务在进行中，请先完成或等待它结束。")
-            if self._prepare_inflight:
+            if self._quality_runtime.prepare_inflight:
                 raise ConflictError("已有一个准备任务正在进行中，请等待它结束。")
-            if self._quality_retry_inflight:
+            if self._quality_runtime.retry_inflight:
                 raise ConflictError(
-                    f"批次 {sorted(self._quality_retry_inflight)[0]} 正在恢复中，请等待结束再准备。"
+                    f"批次 {sorted(self._quality_runtime.retry_inflight)[0]} 正在恢复中，请等待结束再准备。"
                 )
             targets = self._quality_scan_units_locked(
                 scope="selected" if unit_ids else ("current" if current_unit_id else "continue"),
@@ -4504,7 +4494,7 @@ class PipelineManager:
         """
 
         self._ensure_open_locked()
-        bound = self._prepare_inflight.get(prepare_id)
+        bound = self._quality_runtime.prepare_inflight.get(prepare_id)
         if bound is None:
             raise ConflictError("准备任务已经结束或被取代，迟到的结果不再写入。")
         if bound != self._prepare_signature_locked():
@@ -4571,7 +4561,7 @@ class PipelineManager:
             kind="concept-resolution",
             before_attempt=before_attempt,
             on_progress=(
-                self._prepare_progress_repair_callback(
+                self._quality_progress.repair_callback(
                     prepare_id,
                     progress_stage,
                     progress_item_id or f"{group_id}{suffix}",
@@ -4582,297 +4572,18 @@ class PipelineManager:
         )
 
     def _begin_prepare_locked(self, prepare_id: str) -> tuple[str, str, str]:
-        for other_id in list(self._prepare_inflight):
+        for other_id in list(self._quality_runtime.prepare_inflight):
             if other_id != prepare_id:
                 raise ConflictError("已有一个准备任务正在进行中，请等待它结束。")
         signature = self._prepare_signature_locked()
-        self._prepare_inflight[prepare_id] = signature
+        self._quality_runtime.prepare_inflight[prepare_id] = signature
         return signature
 
-    @staticmethod
-    def _prepare_progress_refresh_stage(stage: dict[str, Any]) -> None:
-        total = stage.get("total")
-        if total == 0:
-            stage["pending"] = 0
-            if stage.get("state") not in {"reused", "not_required"}:
-                stage["state"] = "not_required"
-            return
-        if total is None:
-            stage["pending"] = None
-        else:
-            accounted = sum(
-                int(stage.get(key) or 0)
-                for key in ("completed", "failed", "running", "reused", "not_required")
-            )
-            stage["pending"] = max(0, int(total) - accounted)
-        if int(stage.get("running") or 0) > 0:
-            stage["state"] = "running"
-        elif stage.get("pending") is None:
-            stage["state"] = "partial" if any(
-                int(stage.get(key) or 0) for key in ("completed", "failed", "reused", "not_required")
-            ) else "pending"
-        elif int(stage.get("pending") or 0) > 0:
-            stage["state"] = "partial" if any(
-                int(stage.get(key) or 0) for key in ("completed", "failed", "reused", "not_required")
-            ) else "pending"
-        elif int(stage.get("failed") or 0):
-            stage["state"] = "partial" if int(stage.get("completed") or 0) else "failed"
-        elif int(stage.get("reused") or 0) and not int(stage.get("completed") or 0):
-            stage["state"] = "reused"
-        elif int(stage.get("not_required") or 0) == int(total or 0):
-            stage["state"] = "not_required"
-        else:
-            stage["state"] = "complete"
-
-    def _prepare_progress_begin_locked(
-        self,
-        prepare_id: str,
-        prepared: Mapping[str, Any],
-        record: Mapping[str, Any],
-    ) -> None:
-        batches = list(prepared.get("batches") or [])
-        reused_units = len(prepared.get("reused_units") or [])
-        stages: dict[str, dict[str, Any]] = {}
-        for name, unit, total in (
-            ("generation", "batch", len(batches)),
-            ("check", "batch", len(batches)),
-            ("recheck", "card", None),
-            ("lookup", "request", None),
-            ("group_resolution", "group", None),
-            ("local_resolution", "unit", None),
-            ("commit", "commit", 1),
-        ):
-            row: dict[str, Any] = {
-                "state": "pending",
-                "completed": 0,
-                "total": total,
-                "running": 0,
-                "failed": 0,
-                "reused": 0,
-                "not_required": 0,
-                "pending": total,
-                "unit": unit,
-            }
-            if total == 0:
-                row["state"] = "reused" if name in {"generation", "check"} and reused_units else "not_required"
-            if name in {"generation", "check"}:
-                row["reused_units"] = reused_units
-            stages[name] = row
-        stamp = str(record.get("started_at") or now_iso())
-        self._prepare_progress = {
-            "prepare_id": prepare_id,
-            "project_id": str(self.state.get("project", {}).get("id") or ""),
-            "status": "running",
-            "active": True,
-            "progress_revision": 1,
-            "started_at": stamp,
-            "updated_at": stamp,
-            "stages": stages,
-            "_active": {},
-            "_waiting_commit": {},
-            "_item_states": {},
-            "_recent_activity": [],
-            "_errors": [],
-            "provider_invocations": {"generation": 0, "check": 0, "resolution": 0},
-        }
-
-    def _prepare_progress_change(
-        self,
-        prepare_id: str,
-        stage_name: str,
-        item_id: str,
-        event: str,
-        *,
-        unit: str = "item",
-        weight: int = 1,
-        total: int | None = None,
-        label: str = "",
-        metadata: Mapping[str, Any] | None = None,
-        error: str = "",
-        repair: RepairProgress | None = None,
-        provider_channel: str = "",
-    ) -> None:
-        """Best-effort in-memory progress notification, never business state."""
-
-        try:
-            with self.lock:
-                progress = self._prepare_progress
-                if (
-                    not isinstance(progress, dict)
-                    or str(progress.get("prepare_id") or "") != str(prepare_id)
-                    or not progress.get("active")
-                ):
-                    return
-                stages = progress.get("stages")
-                if not isinstance(stages, dict):
-                    return
-                stage = stages.get(stage_name)
-                if not isinstance(stage, dict):
-                    stage = {
-                        "state": "pending", "completed": 0, "total": None,
-                        "running": 0, "failed": 0, "reused": 0,
-                        "not_required": 0, "pending": None, "unit": unit,
-                    }
-                    stages[stage_name] = stage
-                stage["unit"] = unit
-                if total is not None:
-                    stage["total"] = max(0, int(total))
-                key = f"{stage_name}:{item_id}"
-                active = progress["_active"]
-                item_states = progress["_item_states"]
-                recent = progress["_recent_activity"]
-                stamp = now_iso()
-                if event == "configure":
-                    for name, value in (metadata or {}).items():
-                        stage[name] = copy.deepcopy(value)
-                elif event == "start":
-                    if key in active:
-                        return
-                    if item_states.get(key) in {"complete", "failed", "reused", "not_required"}:
-                        return
-                    item_weight = max(0, int(weight))
-                    activity = {
-                        "id": str(item_id),
-                        "stage": stage_name,
-                        "status": "running",
-                        "started_at": stamp,
-                        "label": str(label or stage_name),
-                        "unit": unit,
-                        "affected_count": item_weight,
-                    }
-                    if metadata:
-                        activity.update(copy.deepcopy(dict(metadata)))
-                    active[key] = activity
-                    item_states[key] = "running"
-                    stage["running"] = int(stage.get("running") or 0) + item_weight
-                    if provider_channel:
-                        calls = progress["provider_invocations"]
-                        calls[provider_channel] = int(calls.get(provider_channel) or 0) + 1
-                    recent.append(dict(activity))
-                    if len(recent) > 40:
-                        del recent[:-40]
-                elif event == "repair":
-                    activity = active.get(key)
-                    if activity is None or repair is None:
-                        return
-                    activity.update(
-                        {
-                            "attempt_round": int(repair.round),
-                            "max_rounds": int(repair.max_rounds),
-                            "api_calls_reported": int(repair.api_calls),
-                        }
-                    )
-                    for row in reversed(recent):
-                        if row.get("stage") == stage_name and row.get("id") == str(item_id):
-                            row.update(
-                                {
-                                    "attempt_round": int(repair.round),
-                                    "max_rounds": int(repair.max_rounds),
-                                    "api_calls_reported": int(repair.api_calls),
-                                }
-                            )
-                            break
-                else:
-                    was_active = key in active
-                    activity = active.pop(key, None)
-                    if activity is None:
-                        activity = progress["_waiting_commit"].pop(key, None)
-                    if activity is not None:
-                        if was_active:
-                            stage["running"] = max(
-                                0,
-                                int(stage.get("running") or 0)
-                                - int(activity.get("affected_count") or 0),
-                            )
-                        amount = int(activity.get("affected_count") or 1)
-                    else:
-                        amount = max(0, int(weight))
-                    if event in {"complete", "failed", "reused", "not_required"}:
-                        count = event == "complete" and "completed" or event
-                        stage[count] = int(stage.get(count) or 0) + amount
-                        item_states[key] = event
-                    elif event == "awaiting_commit":
-                        if activity is not None:
-                            activity["status"] = "awaiting_commit"
-                            activity["updated_at"] = stamp
-                            progress["_waiting_commit"][key] = activity
-                        item_states[key] = event
-                    elif event != "pending":
-                        return
-                    if activity is not None:
-                        activity["status"] = event
-                        activity["updated_at"] = stamp
-                        if error:
-                            activity["error"] = str(error)[:300]
-                        for row in reversed(recent):
-                            if row.get("stage") == stage_name and row.get("id") == str(item_id):
-                                row.update(activity)
-                                break
-                    if error:
-                        progress["_errors"].append(str(error)[:300])
-                        if len(progress["_errors"]) > 20:
-                            del progress["_errors"][:-20]
-                self._prepare_progress_refresh_stage(stage)
-                progress["updated_at"] = stamp
-                progress["progress_revision"] = int(progress.get("progress_revision") or 0) + 1
-        except Exception:
-            # A progress observer cannot change whether the actual preparation
-            # succeeds, fails, or commits.
-            return
-
-    def _prepare_progress_repair_callback(
-        self,
-        prepare_id: str,
-        stage: str,
-        item_id: str,
-    ):
-        def notify(progress: RepairProgress) -> None:
-            self._prepare_progress_change(
-                prepare_id, stage, item_id, "repair", repair=progress
-            )
-
-        return notify
-
-    def _prepare_progress_finish_locked(self, prepare_id: str) -> None:
-        progress = self._prepare_progress
-        if not isinstance(progress, dict) or str(progress.get("prepare_id") or "") != str(prepare_id):
-            return
-        active = list((progress.get("_active") or {}).items())
-        waiting = list((progress.get("_waiting_commit") or {}).items())
-        for _key, activity in active:
-            stage = progress.get("stages", {}).get(str(activity.get("stage") or ""))
-            if isinstance(stage, dict):
-                weight = max(0, int(activity.get("affected_count") or 0))
-                stage["running"] = max(0, int(stage.get("running") or 0) - weight)
-                stage["failed"] = int(stage.get("failed") or 0) + weight
-                self._prepare_progress_refresh_stage(stage)
-        for _key, activity in waiting:
-            stage = progress.get("stages", {}).get(str(activity.get("stage") or ""))
-            if isinstance(stage, dict):
-                weight = max(0, int(activity.get("affected_count") or 0))
-                stage["failed"] = int(stage.get("failed") or 0) + weight
-                self._prepare_progress_refresh_stage(stage)
-        if active:
-            progress["_active"].clear()
-        if waiting:
-            progress["_waiting_commit"].clear()
-        try:
-            support = normalize_quality_support(self.state.get("quality_support"))
-            current = concept_automation.automation_of(support).get("prepare")
-            status = str(current.get("status") or "") if isinstance(current, Mapping) else ""
-        except Exception:
-            status = ""
-        if status == "running":
-            status = "interrupted" if self._closed else "failed"
-        progress["status"] = status or "interrupted"
-        progress["active"] = False
-        progress["updated_at"] = now_iso()
-        progress["progress_revision"] = int(progress.get("progress_revision") or 0) + 1
 
     def _finish_prepare(self, prepare_id: str) -> None:
         with self.lock:
-            self._prepare_inflight.pop(prepare_id, None)
-            self._prepare_progress_finish_locked(prepare_id)
+            self._quality_runtime.prepare_inflight.pop(prepare_id, None)
+            self._quality_progress.finish_locked(prepare_id)
 
     # ------------------------------------------------------------------
     # R1 + R5: the confirmed execution
@@ -4907,13 +4618,13 @@ class PipelineManager:
             requested_id = str(plan.get("prepare_id") or "")
             if requested_id and isinstance(running, Mapping) and requested_id == str(running.get("prepare_id") or ""):
                 raise ConflictError("这个准备计划已经执行过，请重新预览后再确认。")
-            if self._prepare_inflight and requested_id not in self._prepare_inflight:
+            if self._quality_runtime.prepare_inflight and requested_id not in self._quality_runtime.prepare_inflight:
                 # A concurrent execution must not start a second run: only the
                 # already-frozen prepare may continue.
                 raise ConflictError("已有一个准备任务正在进行中，请等待它结束。")
-            if self._quality_retry_inflight:
+            if self._quality_runtime.retry_inflight:
                 raise ConflictError(
-                    f"批次 {sorted(self._quality_retry_inflight)[0]} 正在恢复中，请等待结束再准备。"
+                    f"批次 {sorted(self._quality_runtime.retry_inflight)[0]} 正在恢复中，请等待结束再准备。"
                 )
             targets = self._quality_scan_units_locked(
                 scope="selected" if unit_ids else ("current" if current_unit_id else "continue"),
@@ -4994,7 +4705,7 @@ class PipelineManager:
             # Bind the guard only after the frozen record is in the live state,
             # so the identity later steps see is the one registered here.
             self._begin_prepare_locked(prepare_id)
-            self._prepare_progress_begin_locked(
+            self._quality_progress.begin_locked(
                 prepare_id,
                 prepared,
                 automation.get("prepare") if isinstance(automation.get("prepare"), Mapping) else {},
@@ -5548,7 +5259,7 @@ class PipelineManager:
             kind=kind,
             before_attempt=before_attempt,
             on_progress=(
-                self._prepare_progress_repair_callback(
+                self._quality_progress.repair_callback(
                     prepare_id, progress_stage, progress_item_id
                 )
                 if progress_stage and progress_item_id
@@ -5690,7 +5401,7 @@ class PipelineManager:
                 model=str(getattr(checker, "model", "") or ""),
             )
             if not items:
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     prepare_id,
                     "recheck",
                     "recheck-none",
@@ -5708,7 +5419,7 @@ class PipelineManager:
                 max_chars=MAX_CHECK_REQUEST_CHARS,
             )
             recheck_total = len(items) + over_limit
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "recheck",
                 "recheck-plan",
@@ -5760,7 +5471,7 @@ class PipelineManager:
                 ),
             )
         recheck_item_id = f"recheck:{prepare_id}"
-        self._prepare_progress_change(
+        self._quality_progress.change(
             prepare_id,
             "recheck",
             recheck_item_id,
@@ -5778,7 +5489,7 @@ class PipelineManager:
         except ConflictError:
             # A control refusal is not a failed task: the frozen input changed or
             # the run was closed, so this execution is stale and must end as one.
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "recheck",
                 recheck_item_id,
@@ -5800,7 +5511,7 @@ class PipelineManager:
                     record["errors"].append(f"复用单元重查失败：{str(exc)[:200]}")
 
                 self._update_prepare_record_locked(support, prepare_id, mutate_failed)
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "recheck",
                 recheck_item_id,
@@ -5904,7 +5615,7 @@ class PipelineManager:
                     record["counts"]["recheck_reasons"] = by_reason
 
             self._update_prepare_record_locked(support, prepare_id, mutate_refreshed)
-        self._prepare_progress_change(
+        self._quality_progress.change(
             prepare_id,
             "recheck",
             recheck_item_id,
@@ -6013,7 +5724,7 @@ class PipelineManager:
                     if expression not in wanted:
                         wanted.append(expression)
         if not candidates:
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "lookup",
                 "lookup-none",
@@ -6082,7 +5793,7 @@ class PipelineManager:
 
                 self._update_prepare_record_locked(support, prepare_id, mutate_classified)
         if not pending:
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "lookup",
                 "lookup-none-pending",
@@ -6119,7 +5830,7 @@ class PipelineManager:
                     )
 
                 self._update_prepare_record_locked(support, prepare_id, mutate_deferred)
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "lookup",
                 "lookup-pending",
@@ -6185,7 +5896,7 @@ class PipelineManager:
                         )
 
                 self._update_prepare_record_locked(support, prepare_id, mutate_unpaid)
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     prepare_id,
                     "lookup",
                     "lookup-pending",
@@ -6233,7 +5944,7 @@ class PipelineManager:
                 ),
             )
         lookup_item_id = f"lookup:{prepare_id}"
-        self._prepare_progress_change(
+        self._quality_progress.change(
             prepare_id,
             "lookup",
             lookup_item_id,
@@ -6247,7 +5958,7 @@ class PipelineManager:
                 "request_count": 1,
             },
         )
-        self._prepare_progress_change(
+        self._quality_progress.change(
             prepare_id,
             "lookup",
             lookup_item_id,
@@ -6279,7 +5990,7 @@ class PipelineManager:
         except ConflictError:
             # A control refusal is not a failed task: the frozen input changed or
             # the run was closed, so this execution is stale and must end as one.
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "lookup",
                 lookup_item_id,
@@ -6333,7 +6044,7 @@ class PipelineManager:
                     )
 
                 self._update_prepare_record_locked(support, prepare_id, mutate_failed)
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "lookup",
                 lookup_item_id,
@@ -6481,7 +6192,7 @@ class PipelineManager:
                 )
 
             self._update_prepare_record_locked(support, prepare_id, mutate_lookup)
-        self._prepare_progress_change(
+        self._quality_progress.change(
             prepare_id,
             "lookup",
             lookup_item_id,
@@ -6725,7 +6436,7 @@ class PipelineManager:
                 - normal_failed
                 - normal_not_required,
             )
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "group_resolution",
                 "group-plan",
@@ -6740,7 +6451,7 @@ class PipelineManager:
                     "provider_group_count": len(pending),
                 },
             )
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "local_resolution",
                 "local-plan",
@@ -6786,7 +6497,7 @@ class PipelineManager:
                 ),
             )
             group_id = str(group["group_id"])
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "group_resolution",
                 group_id,
@@ -6806,7 +6517,7 @@ class PipelineManager:
                 # The judgment was invalidated while it was in flight (or the
                 # controller refused the next request): this is not a group
                 # failure to record, it ends the whole run as stale.
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     prepare_id,
                     "group_resolution",
                     group_id,
@@ -6875,7 +6586,7 @@ class PipelineManager:
                         record["errors"].append(f"组 {group['group_id']}：{request_error}")
 
                 self._update_prepare_record_locked(support, prepare_id, mutate_group)
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 prepare_id,
                 "group_resolution",
                 group_id,
@@ -6939,7 +6650,7 @@ class PipelineManager:
                     ),
                 )
                 local_item_id = f"{item['group_id']}:{unit_id}"
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     prepare_id,
                     "local_resolution",
                     local_item_id,
@@ -6956,7 +6667,7 @@ class PipelineManager:
                 try:
                     result = resolver.resolve_group(request)
                 except ConflictError:
-                    self._prepare_progress_change(
+                    self._quality_progress.change(
                         prepare_id,
                         "local_resolution",
                         local_item_id,
@@ -6967,7 +6678,7 @@ class PipelineManager:
                     raise
                 except Exception as exc:
                     failures.append(f"局部辨析失败（{unit_id}）：{exc}")
-                    self._prepare_progress_change(
+                    self._quality_progress.change(
                         prepare_id,
                         "local_resolution",
                         local_item_id,
@@ -6985,7 +6696,7 @@ class PipelineManager:
                     )
                 except Exception as exc:
                     failures.append(f"局部辨析结果未通过本地校验（{unit_id}）：{exc}")
-                    self._prepare_progress_change(
+                    self._quality_progress.change(
                         prepare_id,
                         "local_resolution",
                         local_item_id,
@@ -6997,7 +6708,7 @@ class PipelineManager:
                 judgements.append({"unit_id": unit_id, "payload": validated})
                 judged_units.append(unit_id)
                 local_completed_items.append((local_item_id, unit_id))
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     prepare_id,
                     "local_resolution",
                     local_item_id,
@@ -7089,7 +6800,7 @@ class PipelineManager:
 
                 self._update_prepare_record_locked(support, prepare_id, mutate_local)
             for local_item_id, unit_id in local_completed_items:
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     prepare_id,
                     "local_resolution",
                     local_item_id,
@@ -7246,7 +6957,7 @@ class PipelineManager:
             if str(record.get("mode") or "") != concept_automation.AUTOMATIC_MODE:
                 raise ConflictError("准备任务已经变化，请重新开始准备。")
             stored_plan = self._prepare_plan_payload(record.get("plan") or {})
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 str(record.get("prepare_id") or ""),
                 "commit",
                 "commit",
@@ -7255,7 +6966,7 @@ class PipelineManager:
                 total=1,
                 metadata={"save_count": 1},
             )
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 str(record.get("prepare_id") or ""),
                 "commit",
                 "commit",
@@ -7644,7 +7355,7 @@ class PipelineManager:
             try:
                 self._quality_commit_locked(support, old_support=old_support, old_events=old_events)
             except Exception as exc:
-                self._prepare_progress_change(
+                self._quality_progress.change(
                     str(record.get("prepare_id") or ""),
                     "commit",
                     "commit",
@@ -7653,7 +7364,7 @@ class PipelineManager:
                     error=f"最终保存失败：{str(exc)[:240]}",
                 )
                 raise
-            self._prepare_progress_change(
+            self._quality_progress.change(
                 str(record.get("prepare_id") or ""),
                 "commit",
                 "commit",
@@ -7892,7 +7603,7 @@ class PipelineManager:
             if requested_id and requested_id != record_id:
                 raise ConflictError("准备任务已经被替换或不存在，请刷新项目后重试观察。")
 
-            progress = self._prepare_progress
+            progress = self._quality_runtime.progress
             if (
                 not isinstance(progress, Mapping)
                 or str(progress.get("prepare_id") or "") != record_id
@@ -7901,7 +7612,7 @@ class PipelineManager:
                 progress = None
             active = bool(
                 record_id
-                and record_id in self._prepare_inflight
+                and record_id in self._quality_runtime.prepare_inflight
                 and isinstance(progress, Mapping)
                 and progress.get("active") is True
             )
