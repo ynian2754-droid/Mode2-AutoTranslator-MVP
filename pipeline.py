@@ -55,7 +55,7 @@ from core.importers import SourceImporter
 from core.pdf_exporter import PdfExportError, PdfExporter
 from core.pdf_fonts import PDF_MATH_FONT_PATH, load_pdf_fonts
 from core.pdf_glyph_support import scan_text_glyphs, unavailable_scan
-from core import pipeline_output, provider_routing, unit_validation
+from core import pipeline_output, project_state, provider_routing, unit_validation
 from core.project_factory import DEFAULT_SAMPLE_SOURCE, ProjectFactory, empty_output_state
 from core.segmenter import DEFAULT_TARGET_WORDS, MarkdownSegmenter, validate_target_words
 from core.storage import ProjectStore
@@ -167,6 +167,9 @@ class PipelineManager:
         self.assembler = DocumentAssembler(self.runtime_dir)
         self.api_settings = api_settings or ApiSettingsStore(api_settings_dir or self.runtime_dir)
         self.lock = threading.RLock()
+        self._project_state = project_state.ProjectStateCell(
+            state={}, lock=self.lock, store=self.store, closed=False
+        )
         self._provider_bindings = provider_routing.ProviderBindings(
             translation_provider=translation_provider,
             review_provider=review_provider,
@@ -208,6 +211,22 @@ class PipelineManager:
         self._glyph_precheck_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
         self._closed = False
         self.state = self._load_state()
+
+    @property
+    def state(self) -> dict[str, Any]:
+        return self._project_state.state
+
+    @state.setter
+    def state(self, value: dict[str, Any]) -> None:
+        self._project_state.state = value
+
+    @property
+    def _closed(self) -> bool:
+        return self._project_state.closed
+
+    @_closed.setter
+    def _closed(self, value: bool) -> None:
+        self._project_state.closed = value
 
     @property
     def translation_provider(self) -> Any | None:
@@ -765,12 +784,7 @@ class PipelineManager:
             raise PipelineError(str(exc)) from exc
 
     def _save_locked(self) -> None:
-        # A worker callback can arrive after the session has detached this
-        # manager. It may finish in-memory cleanup, but it must never recreate
-        # a deleted runtime directory or write project.json again.
-        if self._closed:
-            return
-        self.store.save(self.state)
+        project_state.save_project(self._project_state)
 
     def _ensure_open_locked(self) -> None:
         if self._closed:
@@ -782,17 +796,7 @@ class PipelineManager:
             self.state["output"] = empty_output_state()
 
     def _event_locked(self, event_type: str, message: str, unit_id: str | None = None, **details: Any) -> None:
-        event: dict[str, Any] = {
-            "at": now_iso(),
-            "type": event_type,
-            "message": message,
-        }
-        if unit_id:
-            event["unit_id"] = unit_id
-        if details:
-            event["details"] = details
-        self.state.setdefault("events", []).append(event)
-        self.state["events"] = self.state["events"][-160:]
+        project_state.append_event(self._project_state, event_type, message, unit_id, details, now_iso)
 
     def _recompute_stats_locked(self) -> None:
         units = self.state.get("units", [])

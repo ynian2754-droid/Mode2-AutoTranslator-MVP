@@ -22,7 +22,8 @@
 | --- | --- | --- |
 | A1 单元校验契约 | 实施者 A：`tests/test_pipeline_unit_contract.py` | 原逻辑 7/7；主 Agent 已独立复跑并通过测试验收 |
 | A2 校验纯函数提取 | 实施者 A：`pipeline.py`、`core/unit_validation.py` | 返工后主 Agent 验收并提交 `afba224` |
-| A3 Provider routing | 实施者 A：`pipeline.py`、`core/provider_routing.py`、A单元契约测试 | 主 Agent 独立验证通过，台账收尾后提交 |
+| A3 Provider routing | 实施者 A：`pipeline.py`、`core/provider_routing.py`、A单元契约测试 | 主 Agent已验收并提交 `dd59816` |
+| A4 项目四资源cell | 实施者 A：`pipeline.py`、`core/project_state.py`、`tests/test_pipeline_state_contract.py` | 实施及联合验证通过，冻结供主 Agent提交 |
 | B 概念内容领域 | 质量 Agent：其授权概念域文件、`tests/test_concept_domain_contract.py` | content `015b772`；candidate/消环 `57ff5e5` 均已验收提交 |
 | 验收台账 | 实施者 A：本文件 | 每阶段只维护此文件，不写 memory |
 | 后续领域与门面收敛 | 主 Agent 分配最小范围 | 尚未验收/完成 |
@@ -56,6 +57,15 @@
 - 迁后单元契约13/13（0.386s）；联合85 Python（1.630s）/4 JS、54 Python内存compile/9 JS syntax、leaf-first/app-first import、diff检查通过；联合数包含B的12项quality公开测试。
 - 主 Agent独立85 Python/4 JS、54 Python/9 JS syntax、eager及deferred运行时SCC=[]通过；实际diff、六property兼容及业务时点均已验收。
 
+## A4 ProjectStateCell 基础批证据
+
+- 先写6项characterization：原版6/6（0.039s）；主 Agent独立原版6/6（0.040s）后批准迁移。覆盖current state替换snapshot/request/output、save失败原异常传播且不回滚项目替换、closed晚到save跳过、active close拒绝后idle关闭、原RLock/store identity及重入、events clock/details/160条裁剪。
+- `ProjectStateCell`严格四字段 `state/lock/store/closed`，在原lock构造之后初始化；state与_closed两个明确property，无mirror；manager lock/store仍引用原实例。原load/create/import/resegment赋值顺序保持，领域始终动态读取cell.state。
+- `save_project(cell)`只有原closed guard及store.save；`append_event(cell,event_type,message,unit_id,details,clock)`只有原事件创建/追加/裁剪，显式clock继续使用调用点pipeline.now_iso，现有module patch可用。两基础函数不acquire锁、不规范化、不recompute stats、不新建事务。
+- 原caller locks不变；全部旧方法AST除两基础write桥均不变，constructor AST仅增加cell初始化；两新基础函数正文仅cell/clock归属替换后与原版严格一致。运行验证四字段、同lock/store identity、state/_closed不在manager.__dict__。
+- 迁后专用6/6（0.047s）；联合98 Python（1.955s）/4 JS、57 Python内存compile/9 JS syntax、两种fresh import顺序、diff检查通过，包含B prepare七项新增测试。
+- 主 Agent独立实际diff及98 Python/4 JS、57 Python/9 JS syntax、runtime SCC=[]通过。本批冻结等待主 Agent提交。
+
 ## 后续cell/execution已通过的设计边界
 
 - 唯一 `ProjectStateCell` 仅state引用、同一个原RLock、store、closed；state及_closed允许明确兼容property，领域每次读取cell.state动态看见项目替换。
@@ -67,7 +77,7 @@
 
 ## 剩余项与下一门
 
-- A3已验收待提交；下一批cell基础先char（state替换动态可见、save失败/closed guard、close活跃冲突、原lock重入identity），随后迁移，独立验证后主 Agent提交。
+- A4已冻结待提交；随后pipeline写权临时交B迁quality card workflow，A并行补unit高风险characterization、实际needs表及纯unit domain，不写pipeline直到B小批结束。
 - B content、candidate、消环已验收；B 后续先补 quality 公开行为 characterization，A 独占 pipeline 写权。
 - 后续调度、运行控制、项目/单元工作流、质量工作流等领域迁移，须逐批冻结文件归属及 characterization；不得通过万能 PipelineContext 暴露整个 manager 或 bound manager callbacks。
 - shared holder 最多为 state 引用、原 RLock、store、closed；领域使用限定端口；具体设计由主 Agent 验收。
