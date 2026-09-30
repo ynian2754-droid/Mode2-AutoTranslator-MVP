@@ -117,8 +117,20 @@
 
 ## 剩余项与下一门
 
-- A6已验收冻结待提交；pipeline临时交B迁QualityRuntime/PrepareProgress；A下一批先准备ExecutionRuntime/InvocationTracker+完整Router迁移前并发characterization，生产写权窗口由主 Agent协调。
+- A6已验收提交 `d844984`；B质量并发七项测试已提交 `0985bd6`，QualityRuntime/PrepareProgress已提交 `5fde422`。当前pipeline由B迁质量请求/恢复纯规则，A仅写execution characterization与本台账，生产窗口由主 Agent协调。
 - B content、candidate、消环已验收；B 后续先补 quality 公开行为 characterization，A 独占 pipeline 写权。
 - 后续调度、运行控制、项目/单元工作流、质量工作流等领域迁移，须逐批冻结文件归属及 characterization；不得通过万能 PipelineContext 暴露整个 manager 或 bound manager callbacks。
 - shared holder 最多为 state 引用、原 RLock、store、closed；领域使用限定端口；具体设计由主 Agent 验收。
 - 最终完整架构验收、真实宿主边界、Git/提交/发布均未完成。本批离线证据不得标记为 driver-accepted。
+
+## A7 执行生命周期首批 characterization
+
+- 新增 `tests/test_pipeline_execution_contract.py` 八项，生产只读。原执行逻辑8/8（0.196s）通过；主 Agent独立读全部测试并原逻辑8/8（0.139s）通过。
+- 真实ThreadPoolExecutor与每unit独立Event证明两个provider同时进入、run始终包含完整scope、仅一unit完成时run继续且真实磁盘保持；fixture记录submitted Future，在原manager完成callback之后追加Event，只作同步观察，不以runtime字段镜像为核心断言。
+- 取消覆盖queued任务首次provider之前、durable translation之后automatic review之前、review返回之前。分别证明未调用后续模型、旧结果丢弃、已保存译文及revision保留，磁盘和公开状态一致。
+- fake Timer捕获原5s宽限期并手动触发，无sleep。旧worker占unit时拒绝重入；其他unit可起新run；旧worker迟到callback与旧Timer重复回调均不能结束或改变新run scope，旧译文不会导入。
+- 精确submit故障保留revision回滚与active清理，以及原异常路径未进行最终save的内存/磁盘差异。已完成Future同步callback证明首次submit前完整scope已冻结，第一unit完成不提前结束run。
+- manager.close与ProjectSession.delete在active及retired worker期间拒绝；迟到worker完全收尾后删除成功，关闭manager拒绝新任务，项目目录不被重建。核心观察为公开run/unit状态、provider调用、真实磁盘及事件。
+- A联合129 Python（2.373s）/4 JS通过；70 Python内存compile/9 JS syntax、fresh leaf-first/app-first imports、含延迟导入且排除TYPE_CHECKING的runtime SCC=[]、git diff --check通过。计数包含B当前质量纯规则工作树改动。
+- 全部数据TemporaryDirectory，socket connect guard，translation与review明确注入离线provider。生产文件未写；本批测试和台账冻结供主 Agent验收提交。
+- 未覆盖的更大scheduler并发矩阵留后续Scheduler批；下一步等待明确生产窗口后实施ExecutionRuntime/InvocationTracker及完整ProviderRouter，不迁unit业务或quality业务到运行时资源底座。
