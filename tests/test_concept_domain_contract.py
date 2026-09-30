@@ -154,6 +154,35 @@ class ConceptDomainContractTests(unittest.TestCase):
         self.assertIsNone(card["check"])
         self.assertEqual(card["status"], "pending_review")
 
+    def test_invalid_candidate_content_is_checked_before_writes_but_check_errors_follow_draft_write(self):
+        support = qs.empty_quality_support()
+        before = copy.deepcopy(support)
+        with self.assertRaises(qs.QualitySupportError):
+            self.candidate(support, {**self.content, "meaning": 1})
+        self.assertEqual(support, before)
+        with self.assertRaises(qs.QualitySupportError) as error:
+            self.candidate(support, check={"verdict": "invalid"})
+        self.assertEqual(str(error.exception), "独立检查结论必须是 supported、disputed、insufficient 或 unchecked。")
+        card = next(iter(support["cards"].values()))
+        self.assertEqual(card["draft"], self.content)
+        self.assertEqual((card["draft_revision"], card["status"], card["check"], support["revision"]), (1, "pending_review", None, 0))
+        before_duplicate = copy.deepcopy(support)
+        outcome = self.candidate(support, check={"verdict": "invalid"})
+        self.assertEqual(outcome["outcome"], "duplicate")
+        self.assertEqual(support, before_duplicate)
+
+    def test_raw_draft_writer_refreshes_exact_content_and_automatic_candidate_keeps_zero_write_duplicate(self):
+        support = qs.empty_quality_support()
+        created = automation.upsert_automatic_draft(support, self.content, unit_sources=self.sources, prepare_id="prepare-1", unit_ids=["u1"], now_iso_value="time-1", check={"verdict": "supported"})
+        self.assertEqual(created["outcome"], "created")
+        before = copy.deepcopy(support)
+        duplicate = automation.upsert_automatic_draft(support, self.content, unit_sources=self.sources, prepare_id="prepare-2", unit_ids=["u1"], now_iso_value="time-2", check={"verdict": "disputed"})
+        self.assertEqual(duplicate["outcome"], "duplicate")
+        self.assertEqual(support, before)
+        card = qs.upsert_draft(support, self.content, unit_sources=self.sources, batch_id="raw", unit_ids=["u1"], now_iso_value="time-3", check={"verdict": "disputed"})
+        self.assertEqual((card["draft_revision"], card["check"]["draft_revision"], support["revision"]), (2, 2, 2))
+        self.assertEqual((card["origin"]["batch_id"], card["updated_at"], card["check"]["verdict"]), ("raw", "time-3", "disputed"))
+
     def test_check_copies_structured_payload_and_refresh_respects_revision_and_protection(self):
         support = qs.empty_quality_support()
         assessment = {"bindings": [{"value": "original"}]}

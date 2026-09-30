@@ -28,7 +28,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from core import concept_content as cc
-from core import quality_support as qs
+from core import concept_candidates as candidates
 from core.utils import now_iso
 
 import mode2_common
@@ -1188,7 +1188,7 @@ def upsert_automatic_draft(
             "card_id": target_id,
             "reason": "该卡有人工决定或批准内容，自动准备不覆盖。",
         }
-    return qs.upsert_candidate(
+    return candidates.upsert_candidate(
         support,
         content,
         unit_sources=unit_sources,
