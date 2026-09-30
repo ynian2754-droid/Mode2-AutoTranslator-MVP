@@ -24,6 +24,13 @@ from core.document_model import empty_document
 from core.docx_exporter import DocxExportError, DocxExporter
 from core.epub_exporter import EpubExportError, EpubExporter
 from core.exceptions import ConflictError, PipelineError
+from core.quality_cards import (
+    QUALITY_ACTION_LABELS,
+    QUALITY_BATCH_ACTIONS,
+    QUALITY_CARD_ACTIONS,
+    QualityCards,
+)
+from core.quality_state import commit_quality_support, quality_unit_sources
 from core.quality_support import (
     DEFAULT_SCAN_SOURCE_WORDS,
     MAX_BATCH_CARD_ACTIONS,
@@ -121,9 +128,6 @@ MAX_CHECK_REQUEST_CHARS = 60_000
 MAX_LOOKUP_CARDS = 20
 
 QUALITY_SCAN_SCOPES = {"current", "selected", "continue"}
-QUALITY_CARD_ACTIONS = {"edit", "approve", "defer", "reject"}
-QUALITY_BATCH_ACTIONS = {"approve", "defer", "reject"}
-QUALITY_ACTION_LABELS = {"approve": "批准", "defer": "暂缓", "reject": "驳回", "edit": "编辑"}
 
 ACTIVE_STATUSES = {"translating", "reviewing"}
 WAITING_STATUSES = {"waiting_translation", "waiting_review"}
@@ -170,6 +174,7 @@ class PipelineManager:
         self._project_state = project_state.ProjectStateCell(
             state={}, lock=self.lock, store=self.store, closed=False
         )
+        self._quality_cards = QualityCards(self._project_state, clock=lambda: now_iso())
         self._provider_bindings = provider_routing.ProviderBindings(
             translation_provider=translation_provider,
             review_provider=review_provider,
@@ -787,8 +792,7 @@ class PipelineManager:
         project_state.save_project(self._project_state)
 
     def _ensure_open_locked(self) -> None:
-        if self._closed:
-            raise ConflictError("当前项目管理器已关闭，不能继续操作。")
+        project_state.ensure_open(self._project_state)
 
     def _invalidate_output_locked(self) -> None:
         output = self.state.get("output")
@@ -2628,23 +2632,14 @@ class PipelineManager:
     # Quality support: concept cards, bounded scans, editorial suggestions.
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _quality_unit_sources(units: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
-        return {
-            str(unit.get("id")): (str(unit.get("source") or ""), str(unit.get("source_sha256") or ""))
-            for unit in units
-            if isinstance(unit, dict) and unit.get("id")
-        }
+    _quality_unit_sources = staticmethod(quality_unit_sources)
 
     def _validate_expected_project_id_locked(
         self,
         expected_project_id: str | None,
     ) -> None:
         """Reject a stale page binding while holding the manager lock."""
-        if expected_project_id is not None and str(expected_project_id) != str(
-            self.state.get("project", {}).get("id") or ""
-        ):
-            raise ConflictError("请求绑定的项目与当前项目不一致，请刷新后重试。")
+        project_state.validate_expected_project_id(self._project_state, expected_project_id)
 
     def _quality_support_read(
         self,
@@ -3085,21 +3080,9 @@ class PipelineManager:
         effective reference version and every later read stay consistent.
         """
 
-        self.state["quality_support"] = support
-        try:
-            self._save_locked()
-        except Exception:
-            self.state["quality_support"] = copy.deepcopy(old_support)
-            events = self.state.get("events")
-            if isinstance(events, list):
-                # _event_locked keeps a bounded log and may have trimmed the
-                # oldest event before save() failed.  Truncating by the old
-                # length therefore cannot restore the real pre-transaction
-                # state; replace the full list instead.
-                events[:] = copy.deepcopy(old_events)
-            else:
-                self.state["events"] = copy.deepcopy(old_events)
-            raise
+        commit_quality_support(
+            self._project_state, support, old_support=old_support, old_events=old_events
+        )
 
     def _quality_batch_repair_control_locked(
         self,
@@ -4501,42 +4484,11 @@ class PipelineManager:
         expected_project_id: str | None = None,
     ) -> dict[str, Any]:
         """Edit, approve, defer or reject one card under the project lock."""
-        action = str(action or "").strip().casefold()
-        if action not in QUALITY_CARD_ACTIONS:
-            raise PipelineError("卡片操作只能是 edit、approve、defer 或 reject。")
-        with self.lock:
-            self._ensure_open_locked()
-            self._validate_expected_project_id_locked(expected_project_id)
-            support = normalize_quality_support(self.state.get("quality_support"))
-            unit_sources = self._quality_unit_sources(self.state.get("units") or [])
-            try:
-                card = apply_card_decision(
-                    support,
-                    str(card_id),
-                    action,
-                    content=content,
-                    unit_sources=unit_sources,
-                    expected_revision=expected_revision,
-                    expected_draft_revision=expected_draft_revision,
-                    now_iso_value=now_iso(),
-                )
-            except QualitySupportError as exc:
-                raise PipelineError(str(exc)) from exc
-            old_support = copy.deepcopy(self.state.get("quality_support"))
-            old_events = copy.deepcopy(self.state.get("events") or [])
-            if action == "approve":
-                self._event_locked(
-                    "quality_card_approved",
-                    f"概念卡 {card['id']} 已人工批准生效。",
-                )
-            self._quality_commit_locked(support, old_support=old_support, old_events=old_events)
-            return {
-                "status": "ok",
-                "card": copy.deepcopy(card),
-                "revision": support["revision"],
-                "approved_version": support["approved_version"],
-                "counts": summarize_counts(support),
-            }
+        return self._quality_cards.update_quality_card(
+            card_id, action, content=content, expected_revision=expected_revision,
+            expected_draft_revision=expected_draft_revision,
+            expected_project_id=expected_project_id,
+        )
 
     def batch_quality_card_action(
         self,
@@ -4557,83 +4509,10 @@ class PipelineManager:
         here; the page must not send such cards.
         """
 
-        action = str(action or "").strip().casefold()
-        if action not in QUALITY_BATCH_ACTIONS:
-            raise PipelineError("批量操作只能是 approve、defer 或 reject。")
-        label = QUALITY_ACTION_LABELS[action]
-        raw_items = list(items or [])
-        if not raw_items:
-            raise PipelineError("批量操作至少需要一张概念卡。")
-        if len(raw_items) > MAX_BATCH_CARD_ACTIONS:
-            raise PipelineError(f"一次最多处理 {MAX_BATCH_CARD_ACTIONS} 张概念卡。")
-        wanted: list[tuple[str, int]] = []
-        seen: set[str] = set()
-        for item in raw_items:
-            if not isinstance(item, Mapping):
-                raise PipelineError("批量操作的每一项都必须是对象。")
-            card_id = str(item.get("card_id") or "").strip()
-            if not card_id:
-                raise PipelineError("批量操作缺少 card_id。")
-            if card_id in seen:
-                raise PipelineError(f"批量操作包含重复的概念卡 {card_id}。")
-            seen.add(card_id)
-            revision = item.get("expected_draft_revision")
-            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
-                raise PipelineError(f"概念卡 {card_id} 缺少有效的 expected_draft_revision。")
-            wanted.append((card_id, revision))
-
-        with self.lock:
-            self._ensure_open_locked()
-            self._validate_expected_project_id_locked(expected_project_id)
-            support = normalize_quality_support(self.state.get("quality_support"))
-            if expected_revision is not None and int(expected_revision) != int(
-                support.get("revision") or 0
-            ):
-                raise ConflictError("概念数据已经变化，请刷新后重试。")
-            unit_sources = self._quality_unit_sources(self.state.get("units") or [])
-            work = copy.deepcopy(support)
-            cards = work.get("cards") or {}
-            for card_id, revision in wanted:
-                card = cards.get(card_id)
-                if not isinstance(card, dict):
-                    raise PipelineError(f"找不到概念卡 {card_id}，批量操作未执行。")
-                if action == "approve":
-                    problems = batch_approval_problems(card, unit_sources=unit_sources)
-                    if problems:
-                        raise PipelineError(f"概念卡 {card_id} 不能批量批准：{'；'.join(problems)}")
-                elif str(card.get("status") or "") != "pending_review" or not isinstance(
-                    card.get("draft"), dict
-                ):
-                    raise PipelineError(f"概念卡 {card_id} 不是待复检草稿，批量操作未执行。")
-                if int(card.get("draft_revision") or 0) != revision:
-                    raise ConflictError(f"概念卡 {card_id} 的草稿版本已经变化，请刷新后重试。")
-                try:
-                    apply_card_decision(
-                        work,
-                        card_id,
-                        action,
-                        unit_sources=unit_sources,
-                        expected_draft_revision=revision,
-                        now_iso_value=now_iso(),
-                    )
-                except QualitySupportError as exc:
-                    raise PipelineError(f"概念卡 {card_id} 未能{label}：{exc}") from exc
-            old_support = copy.deepcopy(self.state.get("quality_support"))
-            old_events = copy.deepcopy(self.state.get("events") or [])
-            self._event_locked(
-                f"quality_cards_batch_{action}",
-                f"批量{label} {len(wanted)} 张待复检概念卡。",
-            )
-            self._quality_commit_locked(work, old_support=old_support, old_events=old_events)
-            return {
-                "status": "ok",
-                "action": action,
-                "card_ids": [card_id for card_id, _revision in wanted],
-                "count": len(wanted),
-                "revision": int(work.get("revision") or 0),
-                "approved_version": int(work.get("approved_version") or 0),
-                "counts": summarize_counts(work),
-            }
+        return self._quality_cards.batch_quality_card_action(
+            action, items, expected_revision=expected_revision,
+            expected_project_id=expected_project_id,
+        )
 
     def quality_affected_units(
         self,
@@ -4695,44 +4574,10 @@ class PipelineManager:
         does not run anything by itself.
         """
 
-        wanted = str(mode or "").strip().casefold()
-        if wanted not in concept_automation.REFERENCE_MODES:
-            raise PipelineError("参考模式只能是 manual 或 automatic。")
-        with self.lock:
-            self._ensure_open_locked()
-            self._validate_expected_project_id_locked(expected_project_id)
-            support = normalize_quality_support(self.state.get("quality_support"))
-            if expected_revision is not None and int(expected_revision) != int(support.get("revision") or 0):
-                raise ConflictError("概念数据已经变化，请刷新后重试。")
-            project = self.state.setdefault("project", {})
-            previous = concept_automation.reference_mode(project)
-            if previous == wanted:
-                return {
-                    "status": "ok",
-                    "reference_mode": wanted,
-                    "changed": False,
-                    "revision": support["revision"],
-                }
-            old_support = copy.deepcopy(self.state.get("quality_support"))
-            old_events = copy.deepcopy(self.state.get("events") or [])
-            project["reference_mode"] = wanted
-            # Switching back to manual retires the automatic references for
-            # *new* requests only: the stored decisions are kept so switching
-            # back to automatic restores exactly the same verified set, and the
-            # per-unit frozen snapshots are never rewritten either way.
-            self._event_locked(
-                "quality_reference_mode",
-                f"参考模式已切换为 {wanted}。",
-                mode=wanted,
-                previous=previous,
-            )
-            self._quality_commit_locked(support, old_support=old_support, old_events=old_events)
-            return {
-                "status": "ok",
-                "reference_mode": wanted,
-                "changed": True,
-                "revision": support["revision"],
-            }
+        return self._quality_cards.set_reference_mode(
+            mode, expected_project_id=expected_project_id,
+            expected_revision=expected_revision,
+        )
 
     def quality_prepare(
         self,

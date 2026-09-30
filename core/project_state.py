@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from core.exceptions import ConflictError
 from core.storage import ProjectStore
 
 
@@ -44,4 +45,20 @@ def append_event(
         event["details"] = details
     cell.state.setdefault("events", []).append(event)
     cell.state["events"] = cell.state["events"][-160:]
+
+
+def ensure_open(cell: ProjectStateCell) -> None:
+    if cell.closed:
+        raise ConflictError("当前项目管理器已关闭，不能继续操作。")
+
+
+def validate_expected_project_id(
+    cell: ProjectStateCell,
+    expected_project_id: str | None,
+) -> None:
+    """Reject a stale page binding while holding the manager lock."""
+    if expected_project_id is not None and str(expected_project_id) != str(
+        cell.state.get("project", {}).get("id") or ""
+    ):
+        raise ConflictError("请求绑定的项目与当前项目不一致，请刷新后重试。")
 
