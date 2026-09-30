@@ -15,8 +15,8 @@ from core.quality_progress import PrepareProgress
 from core.quality_runtime import QualityRuntime
 from core.quality_state import commit_quality_support, quality_unit_sources
 from core.quality_support import (
-    QualitySupportError, apply_check_result, batch_retry_state,
-    normalize_quality_support, record_batch, upsert_candidate,
+    QualitySupportError, apply_check_result, batch_retry_descriptor, batch_retry_state,
+    normalize_batch_retry, normalize_quality_support, record_batch, upsert_candidate,
 )
 from providers.quality_provider import ConceptCheckRequest, ConceptScanRequest
 from providers.repair_loop import ContentRepairExhausted, RepairControl
@@ -922,3 +922,353 @@ class QualityBatchWorkflow:
                 "revision": support["revision"],
                 "approved_version": support["approved_version"],
             }
+
+    def retry_quality_batch(
+        self,
+        batch_id: str,
+        *,
+        expected_project_id: str | None = None,
+        expected_revision: int | None = None,
+        allow_parallel: bool = False,
+    ) -> dict[str, Any]:
+        """Resume one failed batch after the operator explicitly confirmed it.
+
+        The request carries identity only: which units, which step, which
+        candidates and which mode all come from the batch's own frozen record, so
+        a client can never widen the scope or pick a different stage. Model calls
+        happen outside the project lock, and nothing is reported as successful
+        before the result is saved.
+        """
+
+        batch_id = str(batch_id or "").strip()
+        if not batch_id:
+            raise PipelineError("缺少批次标识。")
+
+        # Phase 1 — under the lock: verify identity, freeze the attempt, and make
+        # the running state durable. A failure here must not reach the model.
+        with self.cell.lock:
+            ensure_open(self.cell)
+            validate_expected_project_id(self.cell, expected_project_id)
+            support = normalize_quality_support(self.cell.state.get("quality_support"))
+            if expected_revision is not None and int(expected_revision) != int(
+                support.get("revision") or 0
+            ):
+                raise ConflictError("概念数据已经变化，请刷新后重试。")
+            stored = quality_recovery.batch_row_copy(support, batch_id)
+            if stored is None:
+                raise ConflictError("找不到这个批次的记录，请刷新后重试。")
+            mode = concept_automation.reference_mode(self.cell.state.get("project"))
+            prepare_record = concept_automation.automation_of(support).get("prepare")
+            current_prepare_id = (
+                str(prepare_record.get("prepare_id") or "")
+                if isinstance(prepare_record, Mapping)
+                else ""
+            )
+            descriptor = batch_retry_descriptor(
+                support,
+                stored,
+                unit_sources=quality_unit_sources(self.cell.state.get("units") or []),
+                mode=mode,
+                current_prepare_id=current_prepare_id,
+            )
+            if not descriptor["retryable"]:
+                raise ConflictError(descriptor["blocked_reason"] or "这个批次当前不能重试。")
+            if batch_id in self.runtime.retry_inflight:
+                raise ConflictError(f"批次 {batch_id} 正在恢复中，请勿重复提交。")
+            if self.runtime.retry_inflight and (
+                not allow_parallel
+                or self.runtime.retry_inflight != self.runtime.retry_parallel
+            ):
+                raise ConflictError(
+                    f"批次 {sorted(self.runtime.retry_inflight)[0]} 正在恢复中，请等待结束再重试。"
+                )
+            if set(self.runtime.batch_inflight) - self.runtime.retry_inflight:
+                raise ConflictError("概念扫描仍在进行，请等待结束再重试。")
+            if isinstance(prepare_record, Mapping) and str(
+                prepare_record.get("status") or ""
+            ) == "running":
+                raise ConflictError("自动准备仍在进行，请等待结束或先终止准备。")
+            if self.runtime.prepare_inflight:
+                # The same exclusion the other direction enforces: a retry must
+                # not start behind a prepare that is already running, or the
+                # prepare's own batches would be refused mid-flight.
+                raise ConflictError("自动准备仍在进行，请等待结束或先终止准备。")
+            stage = str(descriptor["stage"])
+            units_by_id = {
+                str(unit.get("id")): unit
+                for unit in (self.cell.state.get("units") or [])
+                if isinstance(unit, dict)
+            }
+            selected = [
+                units_by_id[unit_id]
+                for unit_id in descriptor["units"]
+                if unit_id in units_by_id
+            ]
+            if not selected:
+                raise ConflictError("批次引用的单元已经不存在，请重新预览。")
+            if self.runtime.retry_inflight:
+                requested_units = set(descriptor["units"])
+                requested_cards = {
+                    str(item.get("card_id") or "")
+                    for item in (stored.get("retry") or {}).get("card_bindings") or []
+                }
+                for active_id in self.runtime.retry_inflight:
+                    active = quality_recovery.batch_row_copy(support, active_id) or {}
+                    active_retry = active.get("retry") or {}
+                    active_units = {
+                        str(item.get("unit_id") or "")
+                        for item in active_retry.get("source_bindings") or []
+                    }
+                    active_cards = {
+                        str(item.get("card_id") or "")
+                        for item in active_retry.get("card_bindings") or []
+                    }
+                    if requested_units & active_units or requested_cards & active_cards:
+                        raise ConflictError("这批与正在恢复的批次涉及同一单元或候选，请等待后再重试。")
+            attempt_count = int(descriptor["attempt_count"]) + 1
+            frozen = normalize_batch_retry(stored.get("retry")) or {}
+            running = quality_recovery.batch_retry_record(
+                clock=self.clock,
+                stage=stage,
+                mode=str(descriptor["mode"]),
+                prepare_id=str(frozen.get("prepare_id") or ""),
+                units=selected,
+                cards=[],  # the frozen card bindings are carried over verbatim
+                state="running",
+                attempt_count=attempt_count,
+                last_error=str(descriptor["last_error"]),
+            )
+            running["card_bindings"] = list(frozen.get("card_bindings") or [])
+            old_support = copy.deepcopy(self.cell.state.get("quality_support"))
+            old_events = copy.deepcopy(self.cell.state.get("events") or [])
+            support = normalize_quality_support(self.cell.state.get("quality_support"))
+            target = next(
+                item
+                for item in (support.get("batches") or [])
+                if str(item.get("batch_id")) == batch_id
+            )
+            target["retry"] = running
+            # Admission is a durable state transition. Advance the support
+            # revision here so another confirmed batch can obtain a fresh
+            # version while this provider call is still in flight.
+            record_batch(support, target, touch_coverage=False)
+            append_event(
+                self.cell,
+                "quality_batch_retry_started",
+                f"批次 {batch_id} 的手动恢复已开始（第 {attempt_count} 次）。",
+                None,
+                {"batch_id": batch_id},
+                self.clock,
+            )
+            try:
+                commit_quality_support(self.cell, support, old_support=old_support, old_events=old_events)
+            except Exception as exc:
+                # The attempt was never frozen: no model call may follow.
+                raise PipelineError(f"批次恢复开始前保存失败：{exc}") from exc
+            self.runtime.retry_inflight.add(batch_id)
+            if allow_parallel:
+                self.runtime.retry_parallel.add(batch_id)
+
+        # Phase 2 — outside the lock: the same call chain the batch used before.
+        # The writer closes the recovery record and promotes the prepare rows it
+        # recovered in its own commit, so this is a request, not a second save.
+        close: dict[str, Any] = {
+            "stage": stage,
+            "attempt_count": attempt_count,
+            "units": [str(unit.get("id")) for unit in selected],
+        }
+        failure: BaseException | None = None
+        result: dict[str, Any] = {}
+        try:
+            if stage == "generation":
+                # Re-running the generation chain is exactly a scan of this
+                # batch: it re-checks the sources, calls generation + check, and
+                # records its own outcome on the batch.
+                result = self.scan_quality_batch(
+                    batch_id=batch_id,
+                    unit_ids=[str(unit.get("id")) for unit in selected],
+                    expected_project_id=None,
+                    mode=str(descriptor["mode"]),
+                    retry_close=close,
+                )
+                check_completed = str(result.get("check_status") or "") == "completed"
+            else:
+                result = dict(
+                    self.retry_check(
+                        batch_id, copy.deepcopy(selected), retry_close=close
+                    )
+                )
+                check_completed = str(result.get("check_status") or "") == "completed"
+        except ConflictError as exc:
+            # A guard rejection is not a batch failure and must stay a conflict:
+            # it is never swallowed into the generic failure branch below. The
+            # record keeps the concrete reason the guard refused.
+            self.close_retry_record(
+                batch_id,
+                state="failed",
+                attempt_count=attempt_count,
+                last_error=str(exc),
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - recorded, then reported honestly
+            failure = exc
+            self.close_retry_record(
+                batch_id,
+                state="failed",
+                attempt_count=attempt_count,
+                last_error=str(exc),
+            )
+        else:
+            # The result, its recovery record and the prepare rows it recovered
+            # were committed together by the writer above; ``recorded`` is what
+            # that one commit actually reported, never an assumption.
+            recorded = bool(result.get("retry_recorded"))
+        finally:
+            with self.cell.lock:
+                self.runtime.retry_inflight.discard(batch_id)
+                self.runtime.retry_parallel.discard(batch_id)
+
+        if failure is not None:
+            if isinstance(failure, OSError):
+                # A save failure must say so: the model already answered and its
+                # result was not stored, and nothing may be re-called for it.
+                raise PipelineError(f"批次恢复结果保存失败：{failure}") from failure
+            raise PipelineError(f"批次恢复失败：{failure}") from failure
+        repair = dict(result.get("repair") or {})
+        # Two measured counters, deliberately not merged: how many times this
+        # request invoked each provider, and how many transport requests those
+        # providers reported sending (format-repair rounds included). A stage
+        # that sent nothing reports 0 — nothing is inferred from the outcome.
+        provider_calls = {
+            "generation": int((result.get("provider_calls") or {}).get("generation") or 0),
+            "check": int((result.get("provider_calls") or {}).get("check") or 0),
+        }
+        provider_http = {
+            "generation": int((repair.get("generate") or {}).get("api_calls") or 0),
+            "check": int((repair.get("check") or {}).get("api_calls") or 0),
+        }
+        with self.cell.lock:
+            support_after = normalize_quality_support(self.cell.state.get("quality_support"))
+            stored_after = next(
+                (
+                    dict(item)
+                    for item in (support_after.get("batches") or [])
+                    if str(item.get("batch_id")) == batch_id
+                ),
+                {},
+            )
+            descriptor_after = batch_retry_descriptor(
+                support_after,
+                stored_after,
+                unit_sources=quality_unit_sources(self.cell.state.get("units") or []),
+                mode=concept_automation.reference_mode(self.cell.state.get("project")),
+                current_prepare_id=(
+                    str(
+                        (
+                            concept_automation.automation_of(support_after).get("prepare") or {}
+                        ).get("prepare_id")
+                        or ""
+                    )
+                ),
+            )
+        return {
+            "status": "ok",
+            "batch_id": batch_id,
+            "stage": stage,
+            "mode": str(descriptor["mode"]),
+            "units": [str(unit.get("id")) for unit in selected],
+            "check_status": str(result.get("check_status") or ""),
+            "attempt_count": attempt_count,
+            # Provider invocations this request really made ("0" = never called),
+            # and the transport requests those providers reported sending, which
+            # include their bounded format-repair rounds. Never one field faking
+            # the other.
+            "provider_calls": provider_calls,
+            "provider_http": provider_http,
+            # Post-retry view of the same batch: how many candidates were still
+            # actionable, which ones a human took over, and which changed while
+            # the model was answering.
+            "actionable_cards": int(descriptor_after.get("actionable_cards") or 0),
+            "protected_cards": int(descriptor_after.get("protected_cards") or 0),
+            "changed_cards": int(descriptor_after.get("changed_cards") or 0),
+            "retryable_after": bool(descriptor_after.get("retryable")),
+            "recorded": bool(recorded),
+            "repair_rounds": {
+                "generation": int((repair.get("generate") or {}).get("rounds") or 0),
+                "check": int((repair.get("check") or {}).get("rounds") or 0),
+            },
+            # The concrete reason, never an empty string that hides a failure.
+            "error": str(result.get("check_error") or "").strip(),
+            "reference_refresh_required": bool(
+                self.reference_refresh_required()
+            ),
+        }
+
+    def close_retry_record(
+        self,
+        batch_id: str,
+        *,
+        state: str,
+        attempt_count: int,
+        last_error: str,
+    ) -> bool:
+        """Best-effort bookkeeping for a retry that stored no result.
+
+        Only the failure path uses this: with no stored result there is nothing
+        to commit together, and a record left as "running" asks for a fresh
+        confirmation instead of resuming anything by itself. Returns whether the
+        record was written; a failure here never replaces the real outcome.
+        """
+
+        try:
+            self.finish_retry_locked(
+                batch_id,
+                state=state,
+                attempt_count=attempt_count,
+                last_error=last_error,
+            )
+            return True
+        except Exception:  # noqa: BLE001 - deliberately reported through the return value
+            return False
+
+    def finish_retry_locked(
+        self,
+        batch_id: str,
+        *,
+        state: str,
+        attempt_count: int,
+        last_error: str,
+    ) -> bool:
+        """Record how one hand retry ended when its result was never stored."""
+
+        with self.cell.lock:
+            if self.cell.closed:
+                return False
+            support = normalize_quality_support(self.cell.state.get("quality_support"))
+            target = next(
+                (
+                    item
+                    for item in (support.get("batches") or [])
+                    if str(item.get("batch_id")) == batch_id
+                ),
+                None,
+            )
+            if target is None:
+                return False
+            frozen = normalize_batch_retry(target.get("retry")) or {}
+            target["retry"] = quality_recovery.retry_record_update(
+                frozen,
+                clock=self.clock,
+                state=state,
+                attempt_count=attempt_count,
+                last_error=last_error,
+            )
+            old_support = copy.deepcopy(self.cell.state.get("quality_support"))
+            old_events = copy.deepcopy(self.cell.state.get("events") or [])
+            commit_quality_support(self.cell, support, old_support=old_support, old_events=old_events)
+            return True
+
+    def reference_refresh_required(self) -> bool:
+        support = normalize_quality_support(self.cell.state.get("quality_support"))
+        record = concept_automation.automation_of(support).get("prepare")
+        return bool(isinstance(record, Mapping) and record.get("reference_refresh_required"))
