@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping, Sequence
 
-from core import quality_support as qs
+from core import concept_content as cc
 import mode2_common
 
 from core.concept_automation_assessment import assessment_fingerprint
@@ -29,7 +29,7 @@ def _folded_with_offsets(text: str) -> tuple[str, list[int]]:
     offsets: list[int] = []
     previous_space = False
     for index, char in enumerate(text):
-        folded = qs._fold_fullwidth_ascii(char)
+        folded = cc._fold_fullwidth_ascii(char)
         if folded.isspace():
             if previous_space or not folded_chars:
                 continue
@@ -66,7 +66,7 @@ def lookup_occurrences(
     results: dict[str, list[dict[str, str]]] = {}
     for expression in wanted:
         folded_expression, _offsets = _folded_with_offsets(expression)
-        pattern = qs._expression_pattern(folded_expression) if folded_expression else None
+        pattern = cc._expression_pattern(folded_expression) if folded_expression else None
         rows: list[dict[str, str]] = []
         if pattern is not None:
             for unit_id in order:

@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping, Sequence
 
-from core import quality_support as qs
+from core import concept_content as cc
 
 
 ASSESSMENT_SCHEMA_VERSION = 1
@@ -25,7 +25,7 @@ class AutomationError(ValueError):
 def _expression_key(value: Any) -> str:
     """The project's canonical key for one expression (width/case folded)."""
 
-    return qs._orthographic_expression_key(value)
+    return cc._orthographic_expression_key(value)
 
 
 def _assessment_text(value: Any, *, limit: int, field: str) -> str:
@@ -44,8 +44,8 @@ def _assessment_evidence(
     if not isinstance(value, list) or not value:
         raise AutomationError(f"{field} 至少需要一条可核验的原文证据。")
     try:
-        return qs.verify_evidence(value, unit_sources)
-    except qs.QualitySupportError as exc:
+        return cc.verify_evidence(value, unit_sources)
+    except cc.QualitySupportError as exc:
         raise AutomationError(str(exc)) from exc
 
 
@@ -348,7 +348,7 @@ def assessment_of(
         # mismatch means the card (or the record) changed under it: refuse the
         # result instead of re-deriving an identity that would hide it.
         try:
-            live = qs.content_signature(qs.normalize_card_content(draft, unit_sources=unit_sources))
+            live = cc.content_signature(cc.normalize_card_content(draft, unit_sources=unit_sources))
         except Exception:
             live = ""
         if not live or live != recorded:

@@ -27,6 +27,7 @@ import copy
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from core import concept_content as cc
 from core import quality_support as qs
 from core.utils import now_iso
 
@@ -347,7 +348,7 @@ def normalize_automation(value: Any) -> dict[str, Any]:
     state = empty_automation()
     if not isinstance(value, Mapping):
         return state
-    state["reference_revision"] = qs._coerce_revision(value.get("reference_revision"))
+    state["reference_revision"] = cc._coerce_revision(value.get("reference_revision"))
     state["prepare"] = normalize_prepare(value.get("prepare"))
     decisions = value.get("decisions")
     if isinstance(decisions, Mapping):
@@ -382,11 +383,11 @@ def _normalize_decision(raw: Mapping[str, Any], card_id: str) -> dict[str, Any] 
         "reason": str(raw.get("reason") or "")[:400],
         "member_ids": member_ids,
         "allowed_unit_ids": allowed,
-        "content_revision": qs._coerce_revision(raw.get("content_revision")),
+        "content_revision": cc._coerce_revision(raw.get("content_revision")),
         "content_fingerprint": str(raw.get("content_fingerprint") or ""),
         "evidence": evidence,
         "check_verdict": str(raw.get("check_verdict") or ""),
-        "check_revision": qs._coerce_revision(raw.get("check_revision")),
+        "check_revision": cc._coerce_revision(raw.get("check_revision")),
         "check_reason": str(raw.get("check_reason") or "")[:300],
         # Which structured binding entries this adoption was derived from.
         "binding_ids": [
@@ -699,8 +700,8 @@ def adoption_eligibility(
     if not isinstance(draft, Mapping):
         return "ineligible", "当前卡片没有待审草稿。"
     try:
-        normalized = qs.normalize_card_content(draft, unit_sources=unit_sources)
-    except qs.QualitySupportError as exc:
+        normalized = cc.normalize_card_content(draft, unit_sources=unit_sources)
+    except cc.QualitySupportError as exc:
         return "ineligible", f"内容不通过校验：{exc}"
     if not normalized.get("expressions"):
         return "ineligible", "内容没有可用表达。"
@@ -748,7 +749,7 @@ def applicable_unit_ids(
 def _content_fingerprint(card: Mapping[str, Any]) -> str:
     draft = card.get("draft") if isinstance(card.get("draft"), Mapping) else {}
     try:
-        return qs.content_signature(draft)
+        return cc.content_signature(draft)
     except Exception:  # pragma: no cover - signature is total for mappings
         return ""
 
@@ -1158,7 +1159,7 @@ def candidate_card_id(content: Mapping[str, Any]) -> str:
     """The card id a candidate would create or refresh (never recomputed later)."""
 
     expressions = [str(item) for item in (content.get("expressions") or []) if str(item).strip()]
-    return qs.card_id_for(expressions, content.get("meaning"))
+    return cc.card_id_for(expressions, content.get("meaning"))
 
 def upsert_automatic_draft(
     support: dict[str, Any],
@@ -1207,7 +1208,7 @@ def prepare_fingerprint(
         for unit in units
         if str(unit.get("id") or "")
     )
-    return qs.content_signature({"expressions": rows}) if rows else ""
+    return cc.content_signature({"expressions": rows}) if rows else ""
 
 def group_input_fingerprint(
     group_id: str,
@@ -1250,7 +1251,7 @@ def group_input_fingerprint(
                 (
                     card_id,
                     f"frozen@{int(member.get('content_revision') or 0)}",
-                    qs.content_signature(payload),
+                    cc.content_signature(payload),
                     f"live@{int(card.get('draft_revision') or 0)}",
                     str(card.get("status") or ""),
                     "approved" if card.get("approved") else "-",
@@ -1267,12 +1268,12 @@ def group_input_fingerprint(
     )
     if not rows:
         return ""
-    return qs.content_signature({"expressions": [f"group:{group_id}", *rows, "sources:", *sources]})
+    return cc.content_signature({"expressions": [f"group:{group_id}", *rows, "sources:", *sources]})
 
 def group_key(expressions: Sequence[str]) -> str:
     """Deterministic key of one related-expression group."""
 
-    keys = sorted({qs._orthographic_expression_key(item) for item in expressions if str(item).strip()})
+    keys = sorted({cc._orthographic_expression_key(item) for item in expressions if str(item).strip()})
     return "|".join(keys)
 
 # --------------------------------------------------------------------------
@@ -1530,7 +1531,7 @@ def planned_groups(
             continue
         content = card.get("draft") or card.get("approved") or {}
         for expression in content.get("expressions") or []:
-            key = qs._orthographic_expression_key(expression)
+            key = cc._orthographic_expression_key(expression)
             if not key:
                 continue
             buckets.setdefault(key, [])
