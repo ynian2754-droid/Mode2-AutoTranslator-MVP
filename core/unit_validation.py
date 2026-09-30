@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from core.exceptions import PipelineError
+from core.exceptions import ConflictError, PipelineError
 from providers.base import ReviewResult, TranslationResult
 
 
@@ -58,3 +58,27 @@ def validate_review_result(unit: Mapping[str, Any], result: ReviewResult) -> Non
     if result.verdict == "FAIL" and not has_error:
         raise PipelineError("verdict 为 FAIL 时必须包含 error issue，已拒绝导入。")
 
+
+
+def validate_expected_revision(value: Any | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise PipelineError("译文版本号无效，请刷新后重试。")
+    return value
+
+
+def validate_unit_write_guard(
+    unit: dict[str, Any],
+    *,
+    expected_source_sha256: str | None,
+    expected_translation_revision: int | None,
+) -> None:
+    if expected_source_sha256 is not None:
+        if not isinstance(expected_source_sha256, str) or not expected_source_sha256.strip():
+            raise PipelineError("源文哈希无效，请刷新后再提交。")
+        if expected_source_sha256 != unit["source_sha256"]:
+            raise PipelineError("源文已经变化，请刷新后再提交。")
+    expected_revision = validate_expected_revision(expected_translation_revision)
+    if expected_revision is not None and expected_revision != unit["translation_revision"]:
+        raise ConflictError("译文版本已经变化，请刷新后再提交。")

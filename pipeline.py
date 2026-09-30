@@ -33,6 +33,7 @@ from core.unit_state import (
     CANCELLABLE_START_STATUSES,
 )
 from core.execution_runtime import ExecutionRuntime, InvocationTracker
+from core.editorial_workflow import EditorialWorkflow
 from core.unit_workflow import UnitWorkflow
 from core.quality_batches import QualityBatchWorkflow
 from core.quality_cards import (
@@ -245,6 +246,9 @@ class PipelineManager:
         self._quality_batches = QualityBatchWorkflow(
             self._project_state, self._quality_runtime, self._quality_progress,
             self._provider_router, clock=lambda: now_iso(),
+        )
+        self._editorial_workflow = EditorialWorkflow(
+            self._project_state, self._provider_router
         )
         self._unit_workflow = UnitWorkflow(
             self._project_state, self._unit_requests, self._provider_router,
@@ -595,7 +599,6 @@ class PipelineManager:
 
     def _event_locked(self, event_type: str, message: str, unit_id: str | None = None, **details: Any) -> None:
         project_state.append_event(self._project_state, event_type, message, unit_id, details, now_iso)
-
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -1011,7 +1014,6 @@ class PipelineManager:
             }
             return result
 
-
     def has_live_work_locked(self) -> bool:
         """Read deletion eligibility while the caller holds the project lock."""
         run = self.state.get("run") or {}
@@ -1035,7 +1037,6 @@ class PipelineManager:
 
 
 
-
     def start(self, unit_ids: list[str] | None = None) -> dict[str, Any]:
         return self._scheduler.start(unit_ids)
 
@@ -1046,7 +1047,6 @@ class PipelineManager:
         results are discarded and no following pipeline stage is started.
         """
         return self._scheduler.stop()
-
 
     def _request_for_unit_locked(self, unit: dict[str, Any]) -> tuple[TranslationRequest, dict[str, Any] | None]:
         return self._unit_requests.translation_locked(unit)
@@ -1078,29 +1078,6 @@ class PipelineManager:
 
 
 
-    @staticmethod
-    def _validate_expected_revision(value: Any | None) -> int | None:
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise PipelineError("译文版本号无效，请刷新后重试。")
-        return value
-
-    def _validate_unit_write_guard_locked(
-        self,
-        unit: dict[str, Any],
-        *,
-        expected_source_sha256: str | None,
-        expected_translation_revision: int | None,
-    ) -> None:
-        if expected_source_sha256 is not None:
-            if not isinstance(expected_source_sha256, str) or not expected_source_sha256.strip():
-                raise PipelineError("源文哈希无效，请刷新后再提交。")
-            if expected_source_sha256 != unit["source_sha256"]:
-                raise PipelineError("源文已经变化，请刷新后再提交。")
-        expected_revision = self._validate_expected_revision(expected_translation_revision)
-        if expected_revision is not None and expected_revision != unit["translation_revision"]:
-            raise ConflictError("译文版本已经变化，请刷新后再提交。")
 
     def save_translation(
         self,
@@ -1122,7 +1099,7 @@ class PipelineManager:
             unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in EDITABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许编辑正式译文。")
-            self._validate_unit_write_guard_locked(
+            unit_validation.validate_unit_write_guard(
                 unit,
                 expected_source_sha256=expected_source_sha256,
                 expected_translation_revision=expected_translation_revision,
@@ -1173,7 +1150,7 @@ class PipelineManager:
                 raise PipelineError("当前状态不允许重新校验。")
             if not isinstance(unit.get("translation"), str) or not unit["translation"].strip():
                 raise PipelineError("没有可供校验的正式译文。")
-            self._validate_unit_write_guard_locked(
+            unit_validation.validate_unit_write_guard(
                 unit,
                 expected_source_sha256=expected_source_sha256,
                 expected_translation_revision=expected_translation_revision,
@@ -1200,7 +1177,7 @@ class PipelineManager:
             unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in EDITABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许重新翻译。")
-            self._validate_unit_write_guard_locked(
+            unit_validation.validate_unit_write_guard(
                 unit,
                 expected_source_sha256=expected_source_sha256,
                 expected_translation_revision=expected_translation_revision,
@@ -1556,7 +1533,6 @@ class PipelineManager:
             )
         return limit
 
-
     def _quality_commit_locked(
         self,
         support: dict[str, Any],
@@ -1629,7 +1605,6 @@ class PipelineManager:
             expected_revision=expected_revision,
             allow_parallel=allow_parallel,
         )
-
 
 
 
@@ -5398,55 +5373,6 @@ class PipelineManager:
                 "decisions": len(automation.get("decisions") or {}),
             }
 
-    def _editorial_request_inputs_locked(
-        self,
-        unit: dict[str, Any],
-    ) -> tuple[EditorialSuggestionRequest, tuple[str, str, int]]:
-        unit_state.ensure_unit_feedback_fields(unit)
-        context = unit_requests.unit_translation_context(self.state, unit)
-        adjacent = tuple(
-            value
-            for key in ("previous_context", "next_context")
-            for value in [context.get(key)]
-            if isinstance(value, str) and value.strip()
-        )
-        support = normalize_quality_support(self.state.get("quality_support"))
-        approved_expressions = quality_requests.approved_expressions(support)
-        # Hand the editorial model the actual approved card content (meaning,
-        # acceptable translations, ...) frozen at a concrete version, not just a
-        # bare expression list. Selection is bounded by the same character
-        # budget as translation/review reference injection.
-        selection = select_reference_cards(
-            support,
-            source_text=str(unit.get("source") or ""),
-            adjacent_texts=list(adjacent),
-        )
-        approved_cards = tuple(
-            {
-                "card_id": str(card.get("card_id") or ""),
-                "card_revision": int(card.get("card_revision") or 0),
-                "expressions": list(card.get("expressions") or []),
-                "text": str(card.get("text") or ""),
-            }
-            for card in (selection.get("cards") or [])
-        )
-        request = EditorialSuggestionRequest(
-            project_id=str(self.state.get("project", {}).get("id") or ""),
-            unit_id=unit["id"],
-            source_text=unit["source"],
-            source_sha256=unit["source_sha256"],
-            translated_text=unit["translation"],
-            translation_revision=unit["translation_revision"],
-            adjacent_source=adjacent,
-            approved_expressions=approved_expressions,
-            approved_cards=approved_cards,
-        )
-        return request, (
-            unit["source_sha256"],
-            unit["source"],
-            unit["translation_revision"],
-        )
-
     def editorial_suggestions(
         self,
         unit_id: str,
@@ -5456,74 +5382,12 @@ class PipelineManager:
         expected_translation_revision: int | None = None,
     ) -> dict[str, Any]:
         """Return optional local wording suggestions for a saved translation."""
-        with self.lock:
-            self._ensure_open_locked()
-            self._validate_expected_project_id_locked(expected_project_id)
-            unit = unit_state.find_unit(self.state, unit_id)
-            if not isinstance(unit.get("translation"), str) or not unit["translation"].strip():
-                raise PipelineError("只有已保存译文的单元才能请求表达建议。")
-            self._validate_unit_write_guard_locked(
-                unit,
-                expected_source_sha256=expected_source_sha256,
-                expected_translation_revision=expected_translation_revision,
-            )
-            request, binding = self._editorial_request_inputs_locked(unit)
-
-        _generation, _checker, editorial, _resolution = self._provider_router.quality_channels()
-
-        def before_attempt(round_no: int, api_calls: int) -> None:
-            # Bound to the same unit identity the result is validated against,
-            # so a repair round is never sent for a stale translation.
-            with self.lock:
-                if self._closed:
-                    raise PipelineError("项目已关闭，不再发起下一轮模型修正。")
-                current = unit_state.find_unit(self.state, unit_id)
-                source_sha256, source_text, revision = binding
-                if (
-                    str(current.get("source_sha256") or "") != source_sha256
-                    or str(current.get("source") or "") != source_text
-                    or int(current.get("translation_revision") or 0) != revision
-                ):
-                    raise PipelineError("单元内容已经变化，不再发起下一轮模型修正。")
-
-        request = replace(
-            request,
-            control=RepairControl(
-                invocation_id=unit_id, kind="表达建议", before_attempt=before_attempt
-            ),
+        return self._editorial_workflow.suggestions(
+            unit_id,
+            expected_project_id=expected_project_id,
+            expected_source_sha256=expected_source_sha256,
+            expected_translation_revision=expected_translation_revision,
         )
-        try:
-            result = editorial.suggest(request)
-        except ContentRepairExhausted as exc:
-            raise PipelineError(str(exc)) from exc
-        except QualityProviderError as exc:
-            raise PipelineError(f"表达建议失败：{exc}") from exc
-        except Exception as exc:
-            raise PipelineError(f"表达建议失败：{exc}") from exc
-
-        with self.lock:
-            if self._closed:
-                raise ConflictError("当前项目管理器已关闭，不能返回表达建议。")
-            self._validate_expected_project_id_locked(expected_project_id)
-            current = unit_state.find_unit(self.state, unit_id)
-            source_sha256, source_text, revision = binding
-            if (
-                str(current.get("source_sha256") or "") != source_sha256
-                or str(current.get("source") or "") != source_text
-                or int(current.get("translation_revision") or 0) != revision
-            ):
-                raise ConflictError("单元内容已经变化，表达建议已失效，请重新请求。")
-            return {
-                "status": "ok",
-                "project_id": request.project_id,
-                "unit_id": result.unit_id,
-                "source_sha256": result.source_sha256,
-                "translation_revision": result.translation_revision,
-                "provider": result.provider,
-                "model": result.model,
-                "suggestions": result.suggestions,
-                "note": "建议仅供人工选择，不会自动修改译文。",
-            }
 
     def decide(
         self,
