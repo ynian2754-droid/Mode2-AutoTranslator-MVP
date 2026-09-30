@@ -53,6 +53,7 @@ from core.quality_cards import (
     QualityCards,
 )
 from core import quality_recovery, quality_requests
+from core.quality_prepare_state import PrepareState
 from core.quality_progress import PrepareProgress
 from core.quality_runtime import QualityRuntime
 from core.quality_state import commit_quality_support, quality_unit_sources
@@ -236,6 +237,10 @@ class PipelineManager:
         self._quality_runtime = QualityRuntime()
         self._quality_progress = PrepareProgress(
             self._project_state, self._quality_runtime, clock=lambda: now_iso()
+        )
+        self._prepare_state = PrepareState(
+            self._project_state, self._quality_runtime, self._quality_progress,
+            clock=lambda: now_iso(),
         )
         self._execution = ExecutionRuntime()
         self._invocations = InvocationTracker(
@@ -1984,118 +1989,11 @@ class PipelineManager:
     # R6: the single active prepare + lifecycle guard
     # ------------------------------------------------------------------
 
-    def _prepare_signature_locked(self) -> tuple[str, str, str]:
-        """The identity a running prepare is bound to: project, mode, record id."""
 
-        support = normalize_quality_support(self.state.get("quality_support"))
-        automation = concept_automation.normalize_automation(support.get("automation"))
-        record = automation.get("prepare")
-        return (
-            str(self.state.get("project", {}).get("id") or ""),
-            concept_automation.reference_mode(self.state.get("project")),
-            str((record or {}).get("prepare_id") or ""),
-        )
 
-    def _prepare_guard_locked(self, prepare_id: str) -> None:
-        """Authorize one more model round for the live prepare.
 
-        A close, a project switch, a mode change or a superseded/replaced prepare
-        record all invalidate the run: late results are discarded instead of
-        being written. The stored global revision is not part of the identity —
-        this run's own commits move it — but a *foreign* writer replaces the
-        prepare record or switches the mode, which is what the guard detects.
-        """
 
-        self._ensure_open_locked()
-        bound = self._quality_runtime.prepare_inflight.get(prepare_id)
-        if bound is None:
-            raise ConflictError("准备任务已经结束或被取代，迟到的结果不再写入。")
-        if bound != self._prepare_signature_locked():
-            raise ConflictError("项目、模式或准备任务已经变化，准备结果不再写入。")
 
-    def _prepare_group_fresh_locked(
-        self, prepare_id: str, group_id: str, fingerprint: str
-    ) -> None:
-        """Refuse a group judgment whose frozen input is no longer live.
-
-        The identity guard above only sees the project, the mode and the prepare
-        id, so a formal human edit or an approval leaves it untouched. Here the
-        live cards and sources are compared against the fingerprint frozen with
-        the members, which is what actually makes the old judgment unusable.
-        """
-
-        self._ensure_open_locked()
-        support = normalize_quality_support(self.state.get("quality_support"))
-        record = quality_prepare_record.prepare_record(support, {"prepare_id": prepare_id})
-        stored_plan = quality_prepare_plan.prepare_plan_payload(record.get("plan") or {})
-        group = next(
-            (item for item in stored_plan.get("groups") or [] if item["group_id"] == group_id),
-            None,
-        )
-        if group is None:
-            raise ConflictError("准备计划已经变化，组辨析结果不再写入。")
-        members = group.get("members")
-        if not isinstance(members, list) or not members:
-            members = quality_prepare_plan.prepare_group_members(support, group.get("card_ids") or [])
-        live = concept_automation.group_input_fingerprint(
-            group_id,
-            members,
-            support,
-            self._quality_unit_sources(self.state.get("units") or []),
-        )
-        if not fingerprint or live != fingerprint:
-            raise ConflictError("组辨析期间相关卡片或原文已经变化，本次准备结果已失效。")
-
-    def _prepare_group_control_locked(
-        self,
-        prepare_id: str,
-        group_id: str,
-        fingerprint: str,
-        *,
-        suffix: str = "",
-        progress_stage: str = "",
-        progress_item_id: str = "",
-    ) -> RepairControl:
-        """Authorize every request of one group judgment, repairs included.
-
-        ``suffix`` only distinguishes the invocation identity of the several
-        local judgments of one oversized group; the authorization itself is
-        always the whole group's frozen input, because that is what all of them
-        read.
-        """
-
-        def before_attempt(round_no: int, api_calls: int) -> None:
-            with self.lock:
-                self._prepare_guard_locked(prepare_id)
-                self._prepare_group_fresh_locked(prepare_id, group_id, fingerprint)
-
-        return RepairControl(
-            invocation_id=f"{prepare_id}:{group_id}{suffix}",
-            kind="concept-resolution",
-            before_attempt=before_attempt,
-            on_progress=(
-                self._quality_progress.repair_callback(
-                    prepare_id,
-                    progress_stage,
-                    progress_item_id or f"{group_id}{suffix}",
-                )
-                if progress_stage
-                else None
-            ),
-        )
-
-    def _begin_prepare_locked(self, prepare_id: str) -> tuple[str, str, str]:
-        for other_id in list(self._quality_runtime.prepare_inflight):
-            if other_id != prepare_id:
-                raise ConflictError("已有一个准备任务正在进行中，请等待它结束。")
-        signature = self._prepare_signature_locked()
-        self._quality_runtime.prepare_inflight[prepare_id] = signature
-        return signature
-
-    def _finish_prepare(self, prepare_id: str) -> None:
-        with self.lock:
-            self._quality_runtime.prepare_inflight.pop(prepare_id, None)
-            self._quality_progress.finish_locked(prepare_id)
 
     # ------------------------------------------------------------------
     # R1 + R5: the confirmed execution
@@ -2213,11 +2111,11 @@ class PipelineManager:
             try:
                 self._quality_commit_locked(support, old_support=old_support, old_events=old_events)
             except Exception:
-                self._finish_prepare(prepare_id)
+                self._prepare_state.finish(prepare_id)
                 raise
             # Bind the guard only after the frozen record is in the live state,
             # so the identity later steps see is the one registered here.
-            self._begin_prepare_locked(prepare_id)
+            self._prepare_state.begin_locked(prepare_id)
             self._quality_progress.begin_locked(
                 prepare_id,
                 prepared,
@@ -2247,49 +2145,16 @@ class PipelineManager:
             # ``stale``: nothing of it may be adopted.
             with self.lock:
                 if not self._closed:
-                    self._mark_prepare_failed_locked(
+                    self._prepare_state.mark_failed_locked(
                         prepare_id,
                         str(exc) or "准备执行中断或失败。",
                         status="stale" if isinstance(exc, ConflictError) else "failed",
                     )
             raise
         finally:
-            self._finish_prepare(prepare_id)
+            self._prepare_state.finish(prepare_id)
 
-    def _update_prepare_record_locked(
-        self,
-        support: dict[str, Any],
-        prepare_id: str,
-        mutate: Any,
-    ) -> None:
-        """Mutate the frozen prepare record in place and persist it once."""
 
-        automation = concept_automation.normalize_automation(support.get("automation"))
-        record = automation.get("prepare")
-        if not isinstance(record, Mapping) or str(record.get("prepare_id") or "") != prepare_id:
-            raise ConflictError("准备任务已经变化，本次结果不再写入。")
-        record = copy.deepcopy(dict(record))
-        mutate(record)
-        automation["prepare"] = record
-        support["automation"] = automation
-        old_support = copy.deepcopy(self.state.get("quality_support"))
-        old_events = copy.deepcopy(self.state.get("events") or [])
-        self._quality_commit_locked(support, old_support=old_support, old_events=old_events)
-
-    def _mark_prepare_failed_locked(
-        self, prepare_id: str, reason: str, *, status: str = "failed"
-    ) -> None:
-        support = normalize_quality_support(self.state.get("quality_support"))
-        try:
-            def mutate(record: dict[str, Any]) -> None:
-                record["status"] = status if status in concept_automation.PREPARE_STATUSES else "failed"
-                record["finished_at"] = now_iso()
-                if reason and reason not in record.get("errors", []):
-                    record.setdefault("errors", []).append(reason)
-
-            self._update_prepare_record_locked(support, prepare_id, mutate)
-        except Exception:  # pragma: no cover - best effort while unwinding
-            pass
 
     @staticmethod
     def _mark_local_units_locked(
@@ -2311,44 +2176,6 @@ class PipelineManager:
         if reused:
             counts["local_units_reused"] = int(counts.get("local_units_reused") or 0) + int(reused)
 
-    def _prepare_cards_stale_locked(
-        self,
-        cards: Mapping[str, tuple[int, str]],
-        unit_hashes: Mapping[str, str],
-    ) -> str:
-        """Why a request's frozen input is no longer live, or "" when it still is.
-
-        The lifecycle guard only knows the project, the mode and the prepare id,
-        so a formal human edit, a protection change or a re-imported source
-        leaves it untouched. Every request that may be followed by a repair round
-        therefore re-checks here, immediately before each round, the card ids and
-        draft revisions it was shown, their content fingerprints, their live
-        protection state and the hash of every source it read.
-        """
-
-        support = normalize_quality_support(self.state.get("quality_support"))
-        live_sources = self._quality_unit_sources(self.state.get("units") or [])
-        cards_now = (support.get("cards") or {}) if isinstance(support, Mapping) else {}
-        for card_id, pair in cards.items():
-            revision, fingerprint = (int(pair[0]), str(pair[1]))
-            card = cards_now.get(str(card_id))
-            if not isinstance(card, dict):
-                return f"请求所依据的卡片 {card_id} 已经不存在。"
-            if concept_automation.is_manual_protected(card):
-                return f"卡片 {card_id} 已经有人工内容，自动结果不再写入。"
-            if int(card.get("draft_revision") or 0) != revision:
-                return f"卡片 {card_id} 的草稿版本已经变化。"
-            live_fingerprint = quality_requests.assessment_context_payload(
-                dict(card.get("draft") or {}),
-                unit_sources=live_sources,
-                model="",
-            )["content_fingerprint"]
-            if not live_fingerprint or live_fingerprint != fingerprint:
-                return f"卡片 {card_id} 的内容已经变化。"
-        for unit_id, expected in unit_hashes.items():
-            if str((live_sources.get(str(unit_id)) or ("", ""))[1]) != str(expected):
-                return f"原文 {unit_id} 已经变化。"
-        return ""
 
     @staticmethod
     def _bound_check_request(
@@ -2432,7 +2259,7 @@ class PipelineManager:
             """One batch, start to finish; the caller owns the thread."""
 
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
             try:
                 result = self.scan_quality_batch(
                     batch_id=batch["batch_id"],
@@ -2447,7 +2274,7 @@ class PipelineManager:
             except Exception as exc:
                 batch_errors[index] = f"批次 {batch['batch_id']}：{exc}"
                 with self.lock:
-                    self._prepare_guard_locked(prepare_id)
+                    self._prepare_state.guard_locked(prepare_id)
                     support = normalize_quality_support(self.state.get("quality_support"))
 
                     def mutate_fail(record: dict[str, Any], batch=batch, exc=exc) -> None:
@@ -2463,10 +2290,10 @@ class PipelineManager:
                                 row["status"] = "failed"
                                 row["reason"] = str(exc)[:300]
 
-                    self._update_prepare_record_locked(support, prepare_id, mutate_fail)
+                    self._prepare_state.update_record_locked(support, prepare_id, mutate_fail)
                 return
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
                 support = normalize_quality_support(self.state.get("quality_support"))
                 repair = result.get("repair") or {}
                 generation_calls = int((repair.get("generate") or {}).get("api_calls") or 0)
@@ -2515,7 +2342,7 @@ class PipelineManager:
                             row["batch_id"] = batch["batch_id"]
                             row["reason"] = "独立检查未完成。" if check_failed else ""
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_ok)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_ok)
 
         workers = max(
             1,
@@ -2554,13 +2381,13 @@ class PipelineManager:
         # asked for one. Both steps refuse to write anything their frozen
         # identity no longer matches.
         with self.lock:
-            self._prepare_guard_locked(prepare_id)
+            self._prepare_state.guard_locked(prepare_id)
         self._prepare_refresh_checks(prepare_id, prepared)
         self._prepare_bounded_lookup(prepare_id)
         # Freeze the related groups only now: they are derived from the cards
         # the confirmed execution just produced, not from the empty preview.
         with self.lock:
-            self._prepare_guard_locked(prepare_id)
+            self._prepare_state.guard_locked(prepare_id)
             support = normalize_quality_support(self.state.get("quality_support"))
             unit_sources = self._quality_unit_sources(self.state.get("units") or [])
             groups = concept_automation.planned_groups(support, unit_sources=unit_sources)
@@ -2630,58 +2457,13 @@ class PipelineManager:
                 record["counts"]["reused_groups"] = len(reused)
                 record["plan"] = plan
 
-            self._update_prepare_record_locked(support, prepare_id, mutate_groups)
+            self._prepare_state.update_record_locked(support, prepare_id, mutate_groups)
         return failures
 
     # ------------------------------------------------------------------
     # A2: the re-check of reused cards and the one bounded lookup
     # ------------------------------------------------------------------
 
-    def _prepare_guard_control_locked(
-        self,
-        prepare_id: str,
-        kind: str,
-        *,
-        cards: Mapping[str, tuple[int, str]] | None = None,
-        unit_hashes: Mapping[str, str] | None = None,
-        progress_stage: str = "",
-        progress_item_id: str = "",
-    ) -> RepairControl:
-        """Authorize every round of one prepare request that is not a group judgment.
-
-        A re-check or a lookup reads specific cards of the frozen scope, so the
-        lifecycle identity alone is not enough: a formal human edit, a protection
-        change or a re-imported source leaves that identity untouched while the
-        answer the next round would produce is already about content nobody asked
-        about any more. Before the first round and before **every** repair round,
-        the frozen card identities (id, draft revision, content fingerprint), their
-        live protection state and the hash of every source the request read are
-        compared with the live project. A refusal raises :class:`ConflictError`,
-        which the callers must propagate instead of recording it as a failed task.
-        """
-
-        frozen_cards = dict(cards or {})
-        frozen_hashes = dict(unit_hashes or {})
-
-        def before_attempt(round_no: int, api_calls: int) -> None:
-            with self.lock:
-                self._prepare_guard_locked(prepare_id)
-                stale = self._prepare_cards_stale_locked(frozen_cards, frozen_hashes)
-                if stale:
-                    raise ConflictError(f"{stale}本次请求已失效，结果不再写入。")
-
-        return RepairControl(
-            invocation_id=f"{prepare_id}:{kind}",
-            kind=kind,
-            before_attempt=before_attempt,
-            on_progress=(
-                self._quality_progress.repair_callback(
-                    prepare_id, progress_stage, progress_item_id
-                )
-                if progress_stage and progress_item_id
-                else None
-            ),
-        )
 
     def _prepare_stale_check_cards_locked(
         self,
@@ -2809,7 +2591,7 @@ class PipelineManager:
             support = normalize_quality_support(self.state.get("quality_support"))
             unit_sources = self._quality_unit_sources(self.state.get("units") or [])
             _generation, checker, _editorial, _resolution = self._provider_router.quality_channels()
-            self._prepare_guard_locked(prepare_id)
+            self._prepare_state.guard_locked(prepare_id)
             items, reasons = self._prepare_stale_check_cards_locked(
                 support,
                 unit_sources,
@@ -2869,7 +2651,7 @@ class PipelineManager:
                 candidates=tuple(copy.deepcopy(item["draft"]) for item in items),
                 # The frozen cards and sources this request reads are part of its
                 # authorization: every round, repairs included, re-checks them.
-                control=self._prepare_guard_control_locked(
+                control=self._prepare_state.guard_control_locked(
                     prepare_id,
                     "recheck",
                     cards=frozen,
@@ -2917,7 +2699,7 @@ class PipelineManager:
             raise
         except Exception as exc:
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
 
                 def mutate_failed(record: dict[str, Any], exc: Exception = exc) -> None:
                     record["counts"]["recheck_pending"] = int(
@@ -2926,7 +2708,7 @@ class PipelineManager:
                     record["requests"]["check"] = int(record["requests"].get("check") or 0) + 1
                     record["errors"].append(f"复用单元重查失败：{str(exc)[:200]}")
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_failed)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_failed)
             self._quality_progress.change(
                 prepare_id,
                 "recheck",
@@ -2938,7 +2720,7 @@ class PipelineManager:
             )
             return
         with self.lock:
-            self._prepare_guard_locked(prepare_id)
+            self._prepare_state.guard_locked(prepare_id)
             support = normalize_quality_support(self.state.get("quality_support"))
             unit_sources_now = self._quality_unit_sources(self.state.get("units") or [])
             cards_now = {
@@ -3030,7 +2812,7 @@ class PipelineManager:
                             by_reason[key] = int(by_reason.get(key) or 0) + int(value)
                     record["counts"]["recheck_reasons"] = by_reason
 
-            self._update_prepare_record_locked(support, prepare_id, mutate_refreshed)
+            self._prepare_state.update_record_locked(support, prepare_id, mutate_refreshed)
         self._quality_progress.change(
             prepare_id,
             "recheck",
@@ -3072,7 +2854,7 @@ class PipelineManager:
             state = concept_automation.lookup_state_of(record.get("lookup_state"))
             stored_plan = quality_prepare_plan.prepare_plan_payload(record.get("plan") or {})
             scope = [str(unit_id) for unit_id in stored_plan.get("scope") or []]
-            self._prepare_guard_locked(prepare_id)
+            self._prepare_state.guard_locked(prepare_id)
             scope_set = set(scope)
             candidates: list[dict[str, Any]] = []
             wanted: list[str] = []
@@ -3192,7 +2974,7 @@ class PipelineManager:
                 pending.append(candidate)
         if settled or misses:
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
                 support = normalize_quality_support(self.state.get("quality_support"))
 
                 def mutate_classified(
@@ -3207,7 +2989,7 @@ class PipelineManager:
                             int(record["counts"].get("lookup_misses") or 0) + misses
                         )
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_classified)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_classified)
         if not pending:
             self._quality_progress.change(
                 prepare_id,
@@ -3237,7 +3019,7 @@ class PipelineManager:
             # unfinished and is retried by a later confirmation — never cut down
             # to size and never sent as a partial question.
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
                 support = normalize_quality_support(self.state.get("quality_support"))
 
                 def mutate_deferred(record: dict[str, Any], count=len(pending)) -> None:
@@ -3245,7 +3027,7 @@ class PipelineManager:
                         int(record["counts"].get("lookup_deferred") or 0) + int(count)
                     )
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_deferred)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_deferred)
             self._quality_progress.change(
                 prepare_id,
                 "lookup",
@@ -3285,7 +3067,7 @@ class PipelineManager:
             request_expressions, items, request_material
         )
         with self.lock:
-            self._prepare_guard_locked(prepare_id)
+            self._prepare_state.guard_locked(prepare_id)
             support = normalize_quality_support(self.state.get("quality_support"))
             _generation, checker, _editorial, _resolution = self._provider_router.quality_channels()
             charged = False
@@ -3294,7 +3076,7 @@ class PipelineManager:
                 nonlocal charged
                 charged = concept_automation.charge_budget(record, "lookup")
 
-            self._update_prepare_record_locked(support, prepare_id, mutate_charge)
+            self._prepare_state.update_record_locked(support, prepare_id, mutate_charge)
             if not charged:
                 # Zero-modification refusal: the record only learns why the work
                 # is still pending, exactly like an unpaid large-group judgment.
@@ -3311,7 +3093,7 @@ class PipelineManager:
                             int(record["counts"].get("lookup_deferred") or 0) + int(deferred)
                         )
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_unpaid)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_unpaid)
                 self._quality_progress.change(
                     prepare_id,
                     "lookup",
@@ -3346,7 +3128,7 @@ class PipelineManager:
                 # The cards and the hit sources this lookup quotes are part of its
                 # authorization: a change to either stops the next round before it
                 # is sent, and stops the write even after the answer arrives.
-                control=self._prepare_guard_control_locked(
+                control=self._prepare_state.guard_control_locked(
                     prepare_id, "lookup", cards=frozen_cards, unit_hashes=frozen_hashes
                 ),
                 lookup_evidence=copy.deepcopy(request_material),
@@ -3417,7 +3199,7 @@ class PipelineManager:
             raise
         except Exception as exc:
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
                 support = normalize_quality_support(self.state.get("quality_support"))
 
                 def mutate_failed(
@@ -3459,7 +3241,7 @@ class PipelineManager:
                         expressions=expressions,
                     )
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_failed)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_failed)
             self._quality_progress.change(
                 prepare_id,
                 "lookup",
@@ -3470,7 +3252,7 @@ class PipelineManager:
             )
             return
         with self.lock:
-            self._prepare_guard_locked(prepare_id)
+            self._prepare_state.guard_locked(prepare_id)
             support = normalize_quality_support(self.state.get("quality_support"))
             unit_sources_now = self._quality_unit_sources(self.state.get("units") or [])
             cards_now = {
@@ -3607,7 +3389,7 @@ class PipelineManager:
                     expressions=expressions,
                 )
 
-            self._update_prepare_record_locked(support, prepare_id, mutate_lookup)
+            self._prepare_state.update_record_locked(support, prepare_id, mutate_lookup)
         self._quality_progress.change(
             prepare_id,
             "lookup",
@@ -3811,9 +3593,9 @@ class PipelineManager:
                 stored_plan["resolved_groups"] = resolved
                 # persist the skipped ones so the plan stays the single source
                 with self.lock:
-                    self._update_prepare_plan_locked(prepare_id, stored_plan)
+                    self._prepare_state.update_plan_locked(prepare_id, stored_plan)
             if local_oversized or local_reused:
-                self._update_prepare_record_locked(
+                self._prepare_state.update_record_locked(
                     support,
                     prepare_id,
                     lambda record: self._mark_local_units_locked(
@@ -3888,7 +3670,7 @@ class PipelineManager:
         _generation, _checker, _editorial, resolver = self._provider_router.quality_channels()
         for group in pending:
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
             unit_refs = {}
             for member in group["members"]:
                 for evidence in (member["payload"].get("evidence") or []):
@@ -3904,7 +3686,7 @@ class PipelineManager:
                 # Every model request of the judgment — the first and every
                 # repair round — is authorized by the live prepare before it
                 # is sent.
-                control=self._prepare_group_control_locked(
+                control=self._prepare_state.group_control_locked(
                     prepare_id,
                     group["group_id"],
                     group["input_fingerprint"],
@@ -3973,11 +3755,11 @@ class PipelineManager:
                     # first attempt (round 1 means none were needed).
                     repair_rounds = max(0, int(((result.repair or {}).get("round") or 1)) - 1)
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
+                self._prepare_state.guard_locked(prepare_id)
                 # The result may only be stored while the input is still the one
                 # the model was shown. A formal human edit, an approval or a
                 # changed source in the meantime makes this outcome stale.
-                self._prepare_group_fresh_locked(
+                self._prepare_state.group_fresh_locked(
                     prepare_id, group["group_id"], group["input_fingerprint"]
                 )
                 support = normalize_quality_support(self.state.get("quality_support"))
@@ -4001,7 +3783,7 @@ class PipelineManager:
                     if request_error:
                         record["errors"].append(f"组 {group['group_id']}：{request_error}")
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_group)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_group)
             self._quality_progress.change(
                 prepare_id,
                 "group_resolution",
@@ -4036,14 +3818,14 @@ class PipelineManager:
                     if str(member.get("card_id") or "") in member_ids
                 ]
                 with self.lock:
-                    self._prepare_guard_locked(prepare_id)
+                    self._prepare_state.guard_locked(prepare_id)
                     charged = False
 
                     def mutate_charge(record: dict[str, Any]) -> None:
                         nonlocal charged
                         charged = concept_automation.charge_budget(record, "local_group")
 
-                    self._update_prepare_record_locked(support, prepare_id, mutate_charge)
+                    self._prepare_state.update_record_locked(support, prepare_id, mutate_charge)
                 if not charged:
                     pending_units.append(unit_id)
                     continue
@@ -4056,7 +3838,7 @@ class PipelineManager:
                     members=tuple(members),
                     unit_sources={unit_id: unit_sources[unit_id]},
                     input_fingerprint=item["input_fingerprint"],
-                    control=self._prepare_group_control_locked(
+                    control=self._prepare_state.group_control_locked(
                         prepare_id,
                         item["group_id"],
                         item["input_fingerprint"],
@@ -4132,8 +3914,8 @@ class PipelineManager:
                     unit="group_unit",
                 )
             with self.lock:
-                self._prepare_guard_locked(prepare_id)
-                self._prepare_group_fresh_locked(
+                self._prepare_state.guard_locked(prepare_id)
+                self._prepare_state.group_fresh_locked(
                     prepare_id, item["group_id"], item["input_fingerprint"]
                 )
                 support = normalize_quality_support(self.state.get("quality_support"))
@@ -4214,7 +3996,7 @@ class PipelineManager:
                     for failure in failures:
                         record["errors"].append(failure)
 
-                self._update_prepare_record_locked(support, prepare_id, mutate_local)
+                self._prepare_state.update_record_locked(support, prepare_id, mutate_local)
             for local_item_id, unit_id in local_completed_items:
                 self._quality_progress.change(
                     prepare_id,
@@ -4225,13 +4007,6 @@ class PipelineManager:
                     metadata={"unit_id": unit_id},
                 )
 
-    def _update_prepare_plan_locked(self, prepare_id: str, plan: Mapping[str, Any]) -> None:
-        support = normalize_quality_support(self.state.get("quality_support"))
-
-        def mutate(record: dict[str, Any]) -> None:
-            record["plan"] = dict(plan)
-
-        self._update_prepare_record_locked(support, prepare_id, mutate)
 
 
     def _quality_prepare_resolve(
@@ -4312,7 +4087,7 @@ class PipelineManager:
                 != str(group.get("input_fingerprint") or "")
             ]
             if stale_groups:
-                self._mark_prepare_failed_locked(
+                self._prepare_state.mark_failed_locked(
                     record["prepare_id"],
                     "组辨析所依据的卡片或原文已经变化，本次准备结果已失效。",
                     status="stale",
