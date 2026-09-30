@@ -62,7 +62,7 @@ from core.importers import SourceImporter
 from core.pdf_exporter import PdfExportError, PdfExporter
 from core.pdf_fonts import PDF_MATH_FONT_PATH, load_pdf_fonts
 from core.pdf_glyph_support import scan_text_glyphs, unavailable_scan
-from core import pipeline_output, project_state, provider_routing, unit_validation
+from core import pipeline_output, project_settings, project_state, provider_routing, unit_requests, unit_state, unit_validation
 from core.project_factory import DEFAULT_SAMPLE_SOURCE, ProjectFactory, empty_output_state
 from core.segmenter import DEFAULT_TARGET_WORDS, MarkdownSegmenter, validate_target_words
 from core.storage import ProjectStore
@@ -146,6 +146,10 @@ STOP_GRACE_SECONDS = 5.0
 _UNSET = object()
 
 
+def _unit_request_clock() -> str:
+    return now_iso()
+
+
 class PipelineManager:
     """Own one local project and serialize every imported state mutation."""
 
@@ -173,6 +177,9 @@ class PipelineManager:
         self.lock = threading.RLock()
         self._project_state = project_state.ProjectStateCell(
             state={}, lock=self.lock, store=self.store, closed=False
+        )
+        self._unit_requests = unit_requests.UnitRequests(
+            self._project_state, self.api_settings, _unit_request_clock
         )
         self._quality_cards = QualityCards(self._project_state, clock=lambda: now_iso())
         self._provider_bindings = provider_routing.ProviderBindings(
@@ -309,49 +316,6 @@ class PipelineManager:
         return True
 
     @staticmethod
-    def _configured_target_words(config: Any) -> int:
-        """Read the canonical setting, falling back to the legacy key only."""
-        if not isinstance(config, dict):
-            return DEFAULT_TARGET_WORDS
-        key = "target_segment_words" if "target_segment_words" in config else "max_segment_words"
-        if key not in config:
-            return DEFAULT_TARGET_WORDS
-        try:
-            return validate_target_words(config[key])
-        except (TypeError, ValueError):
-            return DEFAULT_TARGET_WORDS
-
-    def _configured_context_words_locked(self) -> tuple[int, int]:
-        """The persisted per-side source-context budgets of this project.
-
-        A missing or malformed value falls back to the documented
-        target-derived default (see ``core.translation_context``), so a legacy
-        project keeps working without rewriting its config.
-        """
-
-        config = self.state.get("config", {})
-        target_words = self._configured_target_words(config)
-        return (
-            configured_context_words(
-                config, field_name="previous_context_words", target_words=target_words
-            ),
-            configured_context_words(
-                config, field_name="next_context_words", target_words=target_words
-            ),
-        )
-
-    def _unit_translation_context_locked(self, unit: Mapping[str, Any]) -> dict[str, str]:
-        """The previous/next SOURCE context of one unit under the saved budget."""
-
-        previous_words, next_words = self._configured_context_words_locked()
-        return build_translation_context(
-            self.state["units"],
-            unit["id"],
-            previous_words=previous_words,
-            next_words=next_words,
-        )
-
-    @staticmethod
     def _approved_expressions(support: Mapping[str, Any]) -> tuple[str, ...]:
         """Every expression a human-approved card currently carries, sorted."""
 
@@ -422,166 +386,6 @@ class PipelineManager:
     #: describes *that attempt*; it is never the review of a saved draft.
     _TECHNICAL_REVIEW_PROVIDER = "controller"
 
-    @classmethod
-    def _retained_previous_draft_locked(cls, unit: dict[str, Any]) -> dict[str, Any] | None:
-        """The last successfully saved draft as one group: revision + text + review.
-
-        The group carries the revision it was saved at, so a repeated failure, a
-        cancellation or a restart can never re-bind it to the attempt that
-        failed, and a technical failure is never reported as its review. It is
-        replaced only when a *later* draft is saved — the commit consumes the
-        one-shot record at that moment.
-        """
-
-        feedback = unit.get("pending_translation_feedback")
-        if isinstance(feedback, dict):
-            revision = feedback.get("source_revision")
-            text = feedback.get("previous_translation")
-            if (
-                isinstance(revision, int)
-                and not isinstance(revision, bool)
-                and revision >= 0
-                and isinstance(text, str)
-                and text.strip()
-            ):
-                review = feedback.get("previous_review")
-                return {
-                    "revision": revision,
-                    "translation": text,
-                    "review": copy.deepcopy(review) if isinstance(review, dict) else None,
-                    "suggestions": cls._normalize_suggestions(feedback.get("suggestions")),
-                }
-        text = unit.get("translation")
-        if not isinstance(text, str) or not text.strip():
-            return None
-        revision = unit.get("translation_revision")
-        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
-            revision = 0
-        review = unit.get("review")
-        if (
-            not isinstance(review, dict)
-            or review.get("translation_revision") != revision
-            or str(review.get("provider") or "") == cls._TECHNICAL_REVIEW_PROVIDER
-        ):
-            review = None
-        suggestions = cls._extract_review_suggestions(review) if review else []
-        if not suggestions:
-            suggestions = cls._normalize_suggestions(unit.get("review_suggestions"))
-        return {
-            "revision": revision,
-            "translation": text,
-            "review": copy.deepcopy(review) if isinstance(review, dict) else None,
-            "suggestions": suggestions,
-        }
-
-    @staticmethod
-    def _normalize_suggestions(value: Any) -> list[str]:
-        """Keep only useful, ordered, unique suggestion strings."""
-        if not isinstance(value, list):
-            return []
-        suggestions: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            if not isinstance(item, str):
-                continue
-            suggestion = item.strip()
-            if not suggestion or suggestion in seen:
-                continue
-            seen.add(suggestion)
-            suggestions.append(suggestion)
-        return suggestions
-
-    @classmethod
-    def _extract_review_suggestions(cls, review_or_issues: Any) -> list[str]:
-        """Extract only evidence.suggestion values from a review payload."""
-        if isinstance(review_or_issues, dict):
-            issues = review_or_issues.get("issues", [])
-        else:
-            issues = review_or_issues
-        if not isinstance(issues, list):
-            return []
-
-        suggestions: list[str] = []
-        seen: set[str] = set()
-        for issue in issues:
-            if not isinstance(issue, dict):
-                continue
-            evidence = issue.get("evidence")
-            if not isinstance(evidence, dict):
-                continue
-            suggestion = evidence.get("suggestion")
-            if not isinstance(suggestion, str):
-                continue
-            suggestion = suggestion.strip()
-            if not suggestion or suggestion in seen:
-                continue
-            seen.add(suggestion)
-            suggestions.append(suggestion)
-        return suggestions
-
-    @classmethod
-    def _ensure_unit_feedback_fields_locked(cls, unit: dict[str, Any]) -> None:
-        """Backfill feedback fields without changing the existing unit schema."""
-        user_edited_translation = unit.get("user_edited_translation")
-        if user_edited_translation is not None and not isinstance(user_edited_translation, str):
-            user_edited_translation = None
-        if isinstance(user_edited_translation, str):
-            user_edited_translation = user_edited_translation.strip() or None
-        unit["user_edited_translation"] = user_edited_translation
-
-        revision = unit.setdefault("translation_revision", 0)
-        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
-            unit["translation_revision"] = 0
-
-        review = unit.get("review")
-        if "review_suggestions" not in unit:
-            unit["review_suggestions"] = cls._extract_review_suggestions(review)
-        else:
-            unit["review_suggestions"] = cls._normalize_suggestions(unit.get("review_suggestions"))
-
-        if "pending_translation_feedback" not in unit:
-            unit["pending_translation_feedback"] = None
-        else:
-            feedback = unit.get("pending_translation_feedback")
-            if isinstance(feedback, dict):
-                source_revision = feedback.get("source_revision")
-                if (
-                    isinstance(source_revision, bool)
-                    or not isinstance(source_revision, int)
-                    or source_revision < 0
-                ):
-                    unit["pending_translation_feedback"] = None
-                else:
-                    feedback["source_revision"] = source_revision
-                    feedback["suggestions"] = cls._normalize_suggestions(feedback.get("suggestions"))
-                    previous_translation = feedback.get("previous_translation")
-                    if previous_translation is not None and not isinstance(previous_translation, str):
-                        feedback.pop("previous_translation", None)
-                    # Frozen with the rest of the record: the review that belonged
-                    # to the draft above. Absent in older projects and simply
-                    # dropped when it is not a mapping.
-                    if "previous_review" in feedback and not isinstance(
-                        feedback.get("previous_review"), dict
-                    ):
-                        feedback.pop("previous_review", None)
-            elif feedback is not None:
-                unit["pending_translation_feedback"] = None
-
-        if isinstance(review, dict):
-            review.setdefault("translation_revision", unit["translation_revision"])
-
-        # Optional, backward-compatible summary of the last bounded model-repair
-        # execution per kind.  Legacy units simply get an empty dict; a restart
-        # never keeps an in-flight round looking alive.
-        repair = unit.get("model_repair")
-        normalized: dict[str, Any] = {}
-        if isinstance(repair, dict):
-            for kind in ("translation", "review"):
-                entry = cls._normalize_repair_entry(repair.get(kind))
-                if entry is not None:
-                    normalized[kind] = entry
-        unit["model_repair"] = normalized
-
     def _load_state(self) -> dict[str, Any]:
         state = self.store.load()
         if isinstance(state, dict) and state.get("schema_version") == 1:
@@ -615,10 +419,10 @@ class PipelineManager:
             state["config"]["review_provider"] = "openai-compatible"
             # Keep legacy projects read-compatible without adding or rewriting
             # the canonical field during load.
-            self._configured_target_words(state["config"])
+            project_settings.configured_target_words(state["config"])
             for unit in state["units"]:
                 was_translating = unit.get("status") in TRANSLATION_PROCESSING_STATUSES
-                self._ensure_unit_feedback_fields_locked(unit)
+                unit_state.ensure_unit_feedback_fields(unit)
                 if was_translating and unit["translation_revision"] > 0:
                     # A translating unit has not committed a new translation yet.
                     # Roll back its queued revision so persisted feedback remains
@@ -725,7 +529,7 @@ class PipelineManager:
                 generated_units, generated_document = self.segmenter.segment_document(
                     imported.text,
                     demo_mode=bool(self.state.get("project", {}).get("demo_mode")),
-                    max_words=self._configured_target_words(self.state.get("config", {})),
+                    max_words=project_settings.configured_target_words(self.state.get("config", {})),
                     document_format=imported.format,
                     source_name=imported.original_name,
                     **options,
@@ -783,7 +587,7 @@ class PipelineManager:
             # the manual-edit field without changing the segmenter API.
             for unit in state.get("units") or []:
                 if isinstance(unit, dict):
-                    self._ensure_unit_feedback_fields_locked(unit)
+                    unit_state.ensure_unit_feedback_fields(unit)
             return state
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
@@ -877,7 +681,7 @@ class PipelineManager:
 
     def segmentation_settings(self) -> dict[str, Any]:
         with self.lock:
-            target_words = self._configured_target_words(self.state.get("config", {}))
+            target_words = project_settings.configured_target_words(self.state.get("config", {}))
             return {
                 "target_words": target_words,
                 "max_words": target_words,
@@ -939,9 +743,9 @@ class PipelineManager:
 
         with self.lock:
             config = self.state.get("config", {})
-            target_words = self._configured_target_words(config)
+            target_words = project_settings.configured_target_words(config)
             default_words = default_context_words(target_words)
-            previous_words, next_words = self._configured_context_words_locked()
+            previous_words, next_words = unit_requests.configured_context_words_for_state(self.state)
             return {
                 "previous_context_words": previous_words,
                 "next_context_words": next_words,
@@ -970,7 +774,7 @@ class PipelineManager:
                 raise ValueError("必须提供 previous_context_words 或 next_context_words。")
 
             config = self.state.setdefault("config", {})
-            current_previous, current_next = self._configured_context_words_locked()
+            current_previous, current_next = unit_requests.configured_context_words_for_state(self.state)
             previous_value = (
                 current_previous
                 if previous_context_words is _UNSET
@@ -1041,7 +845,7 @@ class PipelineManager:
             target_segment_words,
             max_segment_words,
         )
-        return explicit if explicit is not None else self._configured_target_words(
+        return explicit if explicit is not None else project_settings.configured_target_words(
             self.state.get("config", {})
         )
 
@@ -1188,7 +992,7 @@ class PipelineManager:
             except (OSError, ValueError) as exc:
                 raise PipelineError(f"源文件重新导入失败：{exc}") from exc
 
-            target_words = self._configured_target_words(config)
+            target_words = project_settings.configured_target_words(config)
             old_state = copy.deepcopy(self.state)
             self._close_executor_locked()
             try:
@@ -1461,7 +1265,7 @@ class PipelineManager:
             raise PipelineError(f"不支持的任务模式：{mode}")
 
         unit = self._find_unit_locked(unit_id)
-        self._ensure_unit_feedback_fields_locked(unit)
+        unit_state.ensure_unit_feedback_fields(unit)
         previous_revision: int | None = None
         if mode == "translation":
             if unit.get("status") not in CANCELLABLE_START_STATUSES:
@@ -1670,250 +1474,19 @@ class PipelineManager:
             return "completed"
         return "ready"
 
-    def _structure_role_for_unit_locked(self, unit: dict[str, Any]) -> tuple[str, str]:
-        """Read the structural role of a unit from the document layer only."""
-        document = self.state.get("document")
-        nodes = (document or {}).get("nodes") if isinstance(document, dict) else None
-        if not isinstance(nodes, list):
-            return "", ""
-        node_id = str(unit.get("node_id") or "")
-        for node in nodes:
-            if not isinstance(node, dict) or str(node.get("id") or "") != node_id:
-                continue
-            attributes = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
-            role = attributes.get("layout_role")
-            if isinstance(role, str) and role.strip():
-                return role.strip(), "document_node.layout_role"
-            node_type = str(node.get("type") or "")
-            if node_type:
-                return node_type, "document_node.type"
-        return "", ""
-
-    def _freeze_reference_locked(
-        self,
-        unit: dict[str, Any],
-        *,
-        adjacent_texts: list[str],
-    ) -> dict[str, Any]:
-        """Freeze one reference snapshot for the current unit.
-
-        An empty snapshot is still a real snapshot.  This matters when a
-        translation starts before the first concept card is approved: the
-        automatic review must reuse the empty reference rather than resolving
-        a newer set of cards after the model call returns.  Empty snapshots
-        are deliberately omitted from provider context below, so legacy
-        projects keep receiving the same messages as before.
-        """
-        support = normalize_quality_support(self.state.get("quality_support"))
-        previous_words, next_words = self._configured_context_words_locked()
-        context_budget = {
-            "previous_context_words": previous_words,
-            "next_context_words": next_words,
-        }
-        unit_sources = self._quality_unit_sources(self.state.get("units") or [])
-        mode = concept_automation.reference_mode(self.state.get("project"))
-        candidate_cards = select_reference_candidates(
-            support,
-            unit_id=str(unit.get("id") or ""),
-            unit_sources=unit_sources,
-            mode=mode,
-        )
-        term_rules = terminology_rules(candidate_cards, str(unit.get("source") or ""))
-        selection = select_reference_cards(
-            support,
-            source_text=str(unit.get("source") or ""),
-            adjacent_texts=adjacent_texts,
-            candidate_cards=candidate_cards,
-            conflicted_expressions={
-                str(expression).casefold()
-                for item in term_rules["conflicts"]
-                for expression in item.get("expressions") or [item["expression"]]
-            },
-        )
-        role, role_source = self._structure_role_for_unit_locked(unit)
-        snapshot = build_reference_snapshot(
-            approved_version=support["approved_version"],
-            selection=selection,
-            context_budget=context_budget,
-            structure_role=role,
-            structure_role_source=role_source,
-            term_rules=term_rules,
-        )
-        snapshot["reference_mode"] = mode
-        snapshot["reference_revision"] = int(
-            concept_automation.automation_of(support).get("reference_revision") or 0
-        )
-        snapshot["frozen_empty"] = not bool(candidate_cards)
-        return snapshot
-
-    def _unit_reference_texts_locked(self, unit: dict[str, Any]) -> list[str]:
-        context = self._unit_translation_context_locked(unit)
-        return [
-            str(context[key])
-            for key in ("previous_context", "next_context")
-            if isinstance(context.get(key), str) and context[key].strip()
-        ]
-
-    def _store_reference_locked(
-        self,
-        unit: dict[str, Any],
-        snapshot: dict[str, Any] | None,
-        *,
-        kind: str,
-        is_new_reference: bool = False,
-    ) -> None:
-        """Attach a frozen snapshot to the revision that actually used it."""
-        if snapshot is None:
-            return
-        reference = unit.get("quality_reference")
-        if not isinstance(reference, dict):
-            reference = {}
-        entry = {
-            "translation_revision": int(unit.get("translation_revision") or 0),
-            "approved_version": int(snapshot.get("approved_version") or 0),
-            "card_count": int(snapshot.get("card_count") or 0),
-            "snapshot": snapshot,
-            "at": now_iso(),
-        }
-        if kind == "review":
-            entry["is_new_reference"] = bool(is_new_reference)
-        reference[kind] = entry
-        unit["quality_reference"] = reference
-
     def _request_for_unit_locked(self, unit: dict[str, Any]) -> tuple[TranslationRequest, dict[str, Any] | None]:
-        self._ensure_unit_feedback_fields_locked(unit)
-        context: dict[str, Any] = {
-            "force_review": bool(unit.get("demo_force_review")),
-            "project_id": self.state["project"]["id"],
-        }
-        context.update(self._unit_translation_context_locked(unit))
-        # Freeze the reference snapshot once per translation request. The
-        # automatic review of this same translation reuses exactly this object.
-        snapshot = self._freeze_reference_locked(
-            unit,
-            adjacent_texts=[
-                str(context[key])
-                for key in ("previous_context", "next_context")
-                if isinstance(context.get(key), str) and context[key].strip()
-            ],
-        )
-        if snapshot.get("cards"):
-            context["concept_references"] = [
-                str(card["text"]) for card in snapshot.get("cards") or []
-            ]
-            context["concept_reference_version"] = snapshot["approved_version"]
-        if snapshot.get("term_rules"):
-            context["terminology_rules"] = copy.deepcopy(snapshot["term_rules"])
-        feedback = unit.get("pending_translation_feedback")
-        revision = unit["translation_revision"]
-        manual_reference = unit.get("user_edited_translation")
-        if isinstance(manual_reference, str) and manual_reference.strip():
-            # A saved manual translation is request-local reference material.
-            # It is never used as the source text and never shared with other
-            # Units; a successful new AI translation consumes it below.
-            context["user_edited_translation"] = manual_reference.strip()
-        if isinstance(feedback, dict):
-            suggestions = self._normalize_suggestions(feedback.get("suggestions"))
-            source_revision = feedback.get("source_revision")
-            # The record describes the last *saved* draft; `revision` is the
-            # attempt that replaces it. The version check stays — the record must
-            # belong to an earlier revision than this attempt — but it no longer
-            # demands "exactly one revision back": a repeated failure keeps the
-            # same draft (and its feedback) while the attempt numbers move on,
-            # and its suggestions stay valid until a new draft is saved.
-            earlier_draft = (
-                isinstance(source_revision, int)
-                and not isinstance(source_revision, bool)
-                and 0 <= source_revision < revision
-            )
-            if earlier_draft and suggestions:
-                context["validation_suggestions"] = suggestions
-                previous_translation = feedback.get("previous_translation")
-                if isinstance(previous_translation, str) and previous_translation.strip():
-                    context["previous_translation"] = previous_translation
-        request = TranslationRequest(
-            unit_id=unit["id"],
-            source_text=unit["source"],
-            source_sha256=unit["source_sha256"],
-            source_language=self.state["config"]["source_language"],
-            target_language=self.state["config"]["target_language"],
-            context=context,
-            # Resolved under the pipeline lock when the request is built, so
-            # this attempt keeps its prompt even if the selection changes
-            # while the model call runs.
-            system_prompt=self.api_settings.prompt_for_task("unit_translation"),
-        )
-        return request, snapshot
+        return self._unit_requests.translation_locked(unit)
 
     def _review_request_for_unit_locked(
         self,
         unit: dict[str, Any],
         snapshot: dict[str, Any] | None = None,
     ) -> ReviewRequest:
-        """Build one review request.
-
-        The automatic review after a translation receives the same frozen
-        snapshot that the translation used. A user-triggered re-review freezes
-        the latest approved cards and is flagged as a new reference version.
-        """
-        context: dict[str, Any] = {"project_id": self.state["project"]["id"]}
-        # Limited adjacent SOURCE text only: never other units' translations
-        # and never the browser draft. Direction is preserved so the reviewer
-        # can tell preceding from following context; flattening the two into a
-        # single list lost the direction when one side was empty.
-        translation_context = self._unit_translation_context_locked(unit)
-        previous_source = str(translation_context.get("previous_context") or "").strip()
-        next_source = str(translation_context.get("next_context") or "").strip()
-        adjacent: list[str] = []
-        review_source_context: dict[str, str] = {}
-        if previous_source:
-            adjacent.append(previous_source)
-            review_source_context["previous"] = previous_source
-        if next_source:
-            adjacent.append(next_source)
-            review_source_context["next"] = next_source
-        if not adjacent:
-            own_source = str(unit.get("source") or "").strip()
-            if own_source:
-                # Fall back to the unit's own source so the reviewer always has
-                # at least one verifiable text snippet, clearly labelled as the
-                # current unit rather than a neighbour.
-                adjacent.append(own_source)
-                review_source_context["current"] = own_source
-        if review_source_context:
-            context["review_source_context"] = review_source_context
-        if snapshot is None:
-            snapshot = self._freeze_reference_locked(unit, adjacent_texts=adjacent)
-            is_new = True
-        else:
-            is_new = False
-        self._store_reference_locked(unit, snapshot, kind="review", is_new_reference=is_new)
-        if snapshot.get("cards"):
-            context["concept_references"] = [
-                str(card["text"]) for card in snapshot.get("cards") or []
-            ]
-            context["concept_reference_version"] = snapshot["approved_version"]
-            context["concept_reference_is_new"] = is_new
-        if snapshot.get("term_rules"):
-            context["terminology_rules"] = copy.deepcopy(snapshot["term_rules"])
-        role, role_source = self._structure_role_for_unit_locked(unit)
-        if role:
-            context["structure_role"] = role
-            context["structure_role_source"] = role_source
-        return ReviewRequest(
-            unit_id=unit["id"],
-            source_text=unit["source"],
-            translated_text=unit["translation"],
-            source_sha256=unit["source_sha256"],
-            source_language=self.state["config"]["source_language"],
-            target_language=self.state["config"]["target_language"],
-            context=context,
-            system_prompt=self.api_settings.prompt_for_task("unit_review"),
-        )
+        return self._unit_requests.review_locked(unit, snapshot)
 
     def _mark_failure_locked(self, unit_id: str, rule: str, message: str) -> None:
         unit = self._find_unit_locked(unit_id)
-        self._ensure_unit_feedback_fields_locked(unit)
+        unit_state.ensure_unit_feedback_fields(unit)
         unit["status"] = "needs_action"
         unit["last_error"] = message
         unit["review_suggestions"] = []
@@ -1946,65 +1519,6 @@ class PipelineManager:
 
     MODEL_REPAIR_KINDS = ("translation", "review")
 
-    @staticmethod
-    def _normalize_repair_errors(value: Any) -> list[dict[str, str]]:
-        if not isinstance(value, list):
-            return []
-        errors: list[dict[str, str]] = []
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            code = item.get("code")
-            if not isinstance(code, str) or not code.strip():
-                continue
-            errors.append(
-                {
-                    "code": code.strip()[:80],
-                    "location": str(item.get("location") or "response")[:120],
-                    "detail": str(item.get("detail") or "")[:400],
-                }
-            )
-        return errors[-3:]
-
-    @classmethod
-    def _normalize_repair_entry(cls, value: Any) -> dict[str, Any] | None:
-        """Keep only the documented summary keys, and never claim a live session."""
-        if not isinstance(value, dict):
-            return None
-        status = value.get("status")
-        if status not in {"running", "repairing", "succeeded", "failed", "cancelled"}:
-            status = "failed"
-        errors = cls._normalize_repair_errors(value.get("errors"))
-        if value.get("status") in {"running", "repairing"}:
-            # A restart cannot resume an in-flight model session.
-            status = "failed"
-            errors = (errors + [
-                {
-                    "code": "interrupted",
-                    "location": "invocation",
-                    "detail": "应用重启后该次模型执行已中断。",
-                }
-            ])[-3:]
-        entry: dict[str, Any] = {
-            "invocation_id": str(value.get("invocation_id") or ""),
-            "status": status,
-            "round": max(0, int(value.get("round") or 0)),
-            "max_rounds": max(0, int(value.get("max_rounds") or 0)),
-            "api_calls": max(0, int(value.get("api_calls") or 0)),
-            "success_round": None,
-            "errors": errors,
-        }
-        success_round = value.get("success_round")
-        if status == "succeeded" and isinstance(success_round, int) and not isinstance(success_round, bool):
-            entry["success_round"] = success_round
-        source_sha256 = value.get("source_sha256")
-        if isinstance(source_sha256, str) and source_sha256:
-            entry["source_sha256"] = source_sha256
-        translation_revision = value.get("translation_revision")
-        if isinstance(translation_revision, int) and not isinstance(translation_revision, bool):
-            entry["translation_revision"] = translation_revision
-        return entry
-
     @classmethod
     def _repair_summary_payload(
         cls,
@@ -2026,7 +1540,7 @@ class PipelineManager:
             "max_rounds": max(0, int(max_rounds or 0)),
             "api_calls": max(0, int(api_calls or 0)),
             "success_round": success_round if status == "succeeded" else None,
-            "errors": cls._normalize_repair_errors(errors),
+            "errors": unit_state.normalize_repair_errors(errors),
         }
         if source_sha256:
             payload["source_sha256"] = str(source_sha256)
@@ -2335,7 +1849,7 @@ class PipelineManager:
             unit["last_error"] = None
             unit["updated_at"] = now_iso()
             # The snapshot is bound to the revision this translation created.
-            self._store_reference_locked(unit, snapshot, kind="translation")
+            unit_requests.store_reference(unit, snapshot, kind="translation", clock=_unit_request_clock)
             if result.repair is not None:
                 # Same protected commit as the translation itself: success is
                 # never recorded before the result is safely stored.
@@ -2364,7 +1878,7 @@ class PipelineManager:
     ) -> None:
         with self.lock:
             unit = self._find_unit_locked(unit_id)
-            self._ensure_unit_feedback_fields_locked(unit)
+            unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in {"waiting_review", "needs_action"}:
                 return
             if self._cancel_requested_locked(_run_id):
@@ -2436,7 +1950,7 @@ class PipelineManager:
                 return
             commit_snapshot = copy.deepcopy(unit)
             events_snapshot = list(self.state.get("events") or [])
-            review_suggestions = self._extract_review_suggestions(result.issues)
+            review_suggestions = unit_state.extract_review_suggestions(result.issues)
             unit["review_attempts"] += 1
             unit["review"] = {
                 "verdict": result.verdict,
@@ -2515,7 +2029,7 @@ class PipelineManager:
             if unit_id in self._active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
             unit = self._find_unit_locked(unit_id)
-            self._ensure_unit_feedback_fields_locked(unit)
+            unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in EDITABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许编辑正式译文。")
             self._validate_unit_write_guard_locked(
@@ -2564,7 +2078,7 @@ class PipelineManager:
             if unit_id in self._active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
             unit = self._find_unit_locked(unit_id)
-            self._ensure_unit_feedback_fields_locked(unit)
+            unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in REVIEWABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许重新校验。")
             if not isinstance(unit.get("translation"), str) or not unit["translation"].strip():
@@ -2593,7 +2107,7 @@ class PipelineManager:
             if unit_id in self._active_unit_ids:
                 raise ConflictError(f"翻译单元 {unit_id} 正在处理中，请等待当前任务结束。")
             unit = self._find_unit_locked(unit_id)
-            self._ensure_unit_feedback_fields_locked(unit)
+            unit_state.ensure_unit_feedback_fields(unit)
             if unit.get("status") not in EDITABLE_TRANSLATION_STATUSES:
                 raise PipelineError("当前状态不允许重新翻译。")
             self._validate_unit_write_guard_locked(
@@ -2609,7 +2123,7 @@ class PipelineManager:
             # before the model runs), so they must never overwrite it.
             # One-shot: a successful commit drops the whole record; network
             # errors, cancellation, a late result and a failed save all keep it.
-            retained = self._retained_previous_draft_locked(unit)
+            retained = unit_state.retained_previous_draft(unit)
             unit["pending_translation_feedback"] = {
                 "source_revision": retained["revision"] if retained else current_revision,
                 "suggestions": retained["suggestions"] if retained else [],
@@ -8522,8 +8036,8 @@ class PipelineManager:
         self,
         unit: dict[str, Any],
     ) -> tuple[EditorialSuggestionRequest, tuple[str, str, int]]:
-        self._ensure_unit_feedback_fields_locked(unit)
-        context = self._unit_translation_context_locked(unit)
+        unit_state.ensure_unit_feedback_fields(unit)
+        context = unit_requests.unit_translation_context(self.state, unit)
         adjacent = tuple(
             value
             for key in ("previous_context", "next_context")
@@ -8677,7 +8191,7 @@ class PipelineManager:
                 self._save_locked()
                 return copy.deepcopy(unit)
             if decision == "retry":
-                self._ensure_unit_feedback_fields_locked(unit)
+                unit_state.ensure_unit_feedback_fields(unit)
                 current_revision = unit["translation_revision"]
                 review = unit.get("review")
                 review_revision = review.get("translation_revision") if isinstance(review, dict) else None
@@ -8687,7 +8201,7 @@ class PipelineManager:
                 # previous draft keeps its own revision and its own review, and
                 # a repeated failure carries that same group forward instead of
                 # re-binding it to this attempt.
-                retained = self._retained_previous_draft_locked(unit)
+                retained = unit_state.retained_previous_draft(unit)
                 unit["pending_translation_feedback"] = {
                     "source_revision": retained["revision"] if retained else current_revision,
                     "suggestions": retained["suggestions"] if retained else [],
@@ -8707,7 +8221,7 @@ class PipelineManager:
                 return copy.deepcopy(unit)
             if not translation or not translation.strip():
                 raise PipelineError("修改后的译文不能为空。")
-            self._ensure_unit_feedback_fields_locked(unit)
+            unit_state.ensure_unit_feedback_fields(unit)
             unit["translation"] = translation.strip()
             unit["translation_revision"] += 1
             unit["pending_translation_feedback"] = None

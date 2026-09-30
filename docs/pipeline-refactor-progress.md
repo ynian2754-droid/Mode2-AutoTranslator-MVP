@@ -24,7 +24,8 @@
 | A2 校验纯函数提取 | 实施者 A：`pipeline.py`、`core/unit_validation.py` | 返工后主 Agent 验收并提交 `afba224` |
 | A3 Provider routing | 实施者 A：`pipeline.py`、`core/provider_routing.py`、A单元契约测试 | 主 Agent已验收并提交 `dd59816` |
 | A4 项目四资源cell | 实施者 A：`pipeline.py`、`core/project_state.py`、`tests/test_pipeline_state_contract.py` | 已验收提交 `ecf1b64` |
-| A5 单元高风险生命周期 | 实施者 A：`tests/test_pipeline_unit_lifecycle.py` | 原unit逻辑10项已验收，冻结供主 Agent提交 |
+| A5 单元高风险生命周期 | 实施者 A：`tests/test_pipeline_unit_lifecycle.py` | 已验收提交 `48f04ff` |
+| A6 单元反馈与请求owner | 实施者 A：`pipeline.py`、`core/unit_state.py`、`core/unit_requests.py`、`core/project_settings.py`、A state测试 | 主 Agent已复验通过，冻结供提交 |
 | B 概念内容领域 | 质量 Agent：其授权概念域文件、`tests/test_concept_domain_contract.py` | content `015b772`；candidate/消环 `57ff5e5` 均已验收提交 |
 | 验收台账 | 实施者 A：本文件 | 每阶段只维护此文件，不写 memory |
 | 后续领域与门面收敛 | 主 Agent 分配最小范围 | 尚未验收/完成 |
@@ -48,6 +49,7 @@
 - 提交 `015b772`；17 个定义 AST 同构、别名身份保持；65 Python、4 JS、51 Python 内存语法及9 JS syntax通过。
 - candidate/消环提交 `57ff5e5`；主 Agent 独立联合68 Python/4 JS通过，运行时含延迟导入 SCC=[]。importers 的环仅为 TYPE_CHECKING 边，不是运行时环。
 - quality公开scan/retry/persistence测试提交 `429cc30`；prepare/recovery/commit七项测试提交 `3ed3ca1`。
+- quality card事务/模式owner提交 `76bb7ef`；cell、quality_state和quality_cards形成明确领域边界，B文件后续由B独占。
 - Git 提交使用命令级身份，不修改 Git 配置。
 
 ## A3 Provider routing 验收证据
@@ -77,6 +79,19 @@
 - A前次联合112 Python（2.087s）/4 JS、59 Python/9 JS syntax通过（含B新增卡片测试）；修正后主 Agent独立联合113 Python/4 JS、61 Python/9 JS syntax、runtime SCC=[]通过。
 - 已验收，测试及本台账冻结供主 Agent独立提交，不改B窗口production。
 
+## A6 单元反馈、请求及配置兼容规则证据
+
+- 精确旧定义行数481：反馈/repair normalization六函数207行；request/context/role/reference/配置九函数274行，主 Agent批准同批迁移。
+- 新增legacy load characterization先原版7/7（0.054s）；主 Agent独立原版7/7（0.053s）后放行，迁后7/7（0.051s）。覆盖bool revision、manual字段、suggestion去空/重、旧draft错误类型、inflight repair中断、unknownkind、bool success_round，并保留invalid-int原ValueError。
+- `core/unit_state.py`六纯函数，不依赖manager；`UnitRequests(cell, settings, clock)`承接request owner，context/role/reference规则用显式数据函数，review构造先写reference后返回request的原时点保持。caller原锁、translation/review原引用及保存顺序不变。
+- `configured_target_words`无现有等价函数；主 Agent明确批准 `core/project_settings.py`只承接原11行canonical/legacy读取，避免segmentation/resegment反向依赖请求领域；未新增service或改变逻辑。
+- 两个旧private request入口因原测试保持明确adapter；其余13个旧规则方法移除，所有内部callsites直接转领域函数。clock为明确普通函数依赖，pipeline模块级supplier动态调用原now_iso，不闭包manager。
+- 迁后10项单元生命周期通过（0.204s）；A前次联合114 Python（2.086s）/4 JS通过。主 Agent最终联合121 Python/4 JS、65 Python/9 JS syntax、runtime eager+deferred SCC=[]通过（包含B新增execution测试）。
+- 15定义正文AST经显式state/settings/clock/函数归属标准化后严格一致，连原docstring值保持；所有保留方法仅直接call wiring变化，constructor仅增加Requests owner。主 Agent独立复核6 unit_state+8 requests函数同构及project_settings原11行同体，已读完整callsite wiring。
+- 当前模块大小：pipeline 8240行、unit_state 223行、unit_requests 308行、project_settings 21行。无manager回导，leaf-first/app-first imports及diff检查通过。
+- 剩余耦合：unit执行/repair业务仍在pipeline；provider stage仍两个controller桥；ExecutionRuntime/InvocationTracker/Scheduler尚未迁。项目配置兼容已有独立owner；Requests只持cell/settings/clock，不访问scheduler/provider。
+- 本批冻结供主 Agent提交，pipeline下一窗口交B的QualityRuntime/PrepareProgress迁移。
+
 ## 后续cell/execution已通过的设计边界
 
 - 唯一 `ProjectStateCell` 仅state引用、同一个原RLock、store、closed；state及_closed允许明确兼容property，领域每次读取cell.state动态看见项目替换。
@@ -97,12 +112,12 @@
 | unit_state纯函数 | retained draft、suggestion normalize/extract、feedback backfill、find/failure/cancel/rollback规则 | 显式state/unit/clock，不造常驻UnitData服务 |
 | 基础写入 | save_project/append_event既有函数；普通module级clock supplier保持pipeline.now_iso patch | 不追加service、不合并领域事务 |
 
-- 四常驻对象依赖+普通clock函数的具体构造方式待主 Agent裁决；clock不能闭包manager。Scheduler→Workflow→Tracker单向，manual/save/decide/retry继续facade原锁协调。
+- 四常驻对象依赖+普通clock明确函数参数已获主 Agent裁决；clock不能闭包manager。Scheduler→Workflow→Tracker单向，manual/save/decide/retry继续facade原锁协调。
 - 后续首批候选为unit_request与必要feedback/context/reference纯规则，约300旧逻辑行，最大600旧生产行；现有两个private request入口因旧测试可保持明确adapter，其他规则按实际调用点替换，不批量wrapper。
 
 ## 剩余项与下一门
 
-- A4已提交ecf1b64；A5测试已冻结待提交。B quality card workflow小批收尾后pipeline写权交回A，先裁决/迁unit requests+必要feedback纯规则，随后真正UnitWorkflow。
+- A6已验收冻结待提交；pipeline临时交B迁QualityRuntime/PrepareProgress；A下一批先准备ExecutionRuntime/InvocationTracker+完整Router迁移前并发characterization，生产写权窗口由主 Agent协调。
 - B content、candidate、消环已验收；B 后续先补 quality 公开行为 characterization，A 独占 pipeline 写权。
 - 后续调度、运行控制、项目/单元工作流、质量工作流等领域迁移，须逐批冻结文件归属及 characterization；不得通过万能 PipelineContext 暴露整个 manager 或 bound manager callbacks。
 - shared holder 最多为 state 引用、原 RLock、store、closed；领域使用限定端口；具体设计由主 Agent 验收。

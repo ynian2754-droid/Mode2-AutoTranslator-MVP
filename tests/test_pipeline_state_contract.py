@@ -129,6 +129,44 @@ class PipelineStateContractTests(unittest.TestCase):
                                       "unit_id": "unit-id", "details": {"rule": "offline"}})
         self.assertEqual(json.loads(manager.state_path.read_text(encoding="utf-8"))["events"], events)
 
+    def test_legacy_feedback_and_repair_normalize_when_loading_saved_project(self):
+        state = self.manager.snapshot()
+        unit = state["units"][0]
+        unit.update(user_edited_translation=42, translation_revision=True,
+                    review={"verdict": "FAIL", "issues": []},
+                    review_suggestions=[" first ", "first", "", None, "second"],
+                    pending_translation_feedback={"source_revision": 0, "suggestions": [" fix ", "fix", 2],
+                                                  "previous_translation": 7, "previous_review": []},
+                    model_repair={"translation": {"status": "repairing", "round": 2, "max_rounds": 3,
+                                                    "api_calls": 2, "success_round": 2,
+                                                    "errors": [{"code": " prior ", "detail": "d"}, {}]},
+                                  "review": {"status": "succeeded", "success_round": True},
+                                  "unknown_kind": {"status": "succeeded"}})
+        self.manager.state_path.write_text(json.dumps(state), encoding="utf-8")
+        reloaded = PipelineManager(Path(self.tmp.name), translation_provider=self.translator,
+                                   review_provider=self.reviewer)
+        self.addCleanup(reloaded.close)
+        loaded = reloaded.get_unit(self.manager.snapshot()["units"][0]["id"])
+        self.assertIsNone(loaded["user_edited_translation"])
+        self.assertEqual(loaded["translation_revision"], 0)
+        self.assertEqual(loaded["review"]["translation_revision"], 0)
+        self.assertEqual(loaded["review_suggestions"], ["first", "second"])
+        self.assertEqual(loaded["pending_translation_feedback"], {"source_revision": 0, "suggestions": ["fix"]})
+        self.assertEqual(set(loaded["model_repair"]), {"translation", "review"})
+        repair = loaded["model_repair"]["translation"]
+        self.assertEqual((repair["status"], repair["api_calls"], repair["success_round"]), ("failed", 2, None))
+        self.assertEqual(repair["errors"][0], {"code": "prior", "location": "response", "detail": "d"})
+        self.assertEqual(repair["errors"][-1]["code"], "interrupted")
+        self.assertIsNone(loaded["model_repair"]["review"]["success_round"])
+        # Existing numeric conversion failures are not silently repaired.
+        loaded["model_repair"]["translation"]["round"] = "invalid-int"
+        stored = reloaded.snapshot()
+        stored["units"][0] = loaded
+        reloaded.state_path.write_text(json.dumps(stored), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            PipelineManager(Path(self.tmp.name), translation_provider=self.translator,
+                            review_provider=self.reviewer)
+
 
 if __name__ == "__main__":
     unittest.main()
