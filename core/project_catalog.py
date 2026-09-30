@@ -274,14 +274,7 @@ class ProjectSession:
                 # while holding the manager lock, then keep that lock through
                 # delete/close so a concurrent start cannot slip in.
                 with manager.lock:
-                    run = manager.state.get("run") or {}
-                    if (
-                        run.get("running")
-                        or run.get("status") == "stopping"
-                        or getattr(manager, "_active_unit_ids", None)
-                        or getattr(manager, "_active_task_meta", None)
-                        or getattr(manager, "_retired_executors", None)
-                    ):
+                    if manager.has_live_work_locked():
                         raise ConflictError("流水线仍有任务未完全收尾，不能删除项目。")
                     # Delete first while both lifecycle locks are held.  If
                     # the filesystem operation fails, the manager remains open

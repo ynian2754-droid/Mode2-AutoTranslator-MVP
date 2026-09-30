@@ -134,3 +134,16 @@
 - A联合129 Python（2.373s）/4 JS通过；70 Python内存compile/9 JS syntax、fresh leaf-first/app-first imports、含延迟导入且排除TYPE_CHECKING的runtime SCC=[]、git diff --check通过。计数包含B当前质量纯规则工作树改动。
 - 全部数据TemporaryDirectory，socket connect guard，translation与review明确注入离线provider。生产文件未写；本批测试和台账冻结供主 Agent验收提交。
 - 未覆盖的更大scheduler并发矩阵留后续Scheduler批；下一步等待明确生产窗口后实施ExecutionRuntime/InvocationTracker及完整ProviderRouter，不迁unit业务或quality业务到运行时资源底座。
+
+## A8 ExecutionRuntime / InvocationTracker / ProviderRouter 基础批
+
+- A7 execution八项已验收提交 `dfc3a96`；B质量请求/恢复规则已提交 `476a6ce`，editorial五项测试已独立提交 `a897110`。
+- 生产四文件scope：pipeline、core/execution_runtime新模块、core/provider_routing、core/project_catalog仅delete query wiring；未写B领域文件或新增测试。
+- ExecutionRuntime唯一拥有原九项executor/并发数、active unit/Future/meta、cancel Event、stop Timer、retired executor、invocation map。所有内部属性直接转owner，不加property或镜像集合。
+- Tracker四方法16旧行；Router两stage方法44旧行。Tracker不增减锁；Router保留unit原lock与动态注入读取、quality锁前冻结四provider tuple以及partial fake默认语义。pipeline模块级id/factories supplier动态读取原uuid与九构造器，兼容既有pipeline模块patch，不闭包manager。
+- 六迁移方法正文AST经显式归属/factory映射后严格一致；132保留方法正文经直接属性/调用映射后严格一致（验证器保持原Store/Load ctx），constructor除九字段替换为三个明确owner初始化外严格一致。Router原docstring值保持。
+- 新has_live_work_locked仅只读原run.running/status stopping与active ids/meta/retired三项综合谓词，无新锁。ProjectSession.delete保留session→manager双锁贯穿query/delete/close；close自身仍仅原active ids条件，未增强或复用delete guard。
+- 迁后8 execution（0.143s）、13 unit/routing（0.405s）、10 unit lifecycle（0.208s）通过；A联合134 Python（2.406s）/4 JS、72 Python内存compile/9 JS syntax、两种fresh import顺序、含延迟导入runtime SCC=[]、git diff --check通过。主 Agent独立完整diff/134 Python/4 JS/72 Python/9 JS/runtime SCC=[]通过。
+- 模块大小：pipeline7627行、execution_runtime58行、provider_routing139行、project_catalog476行。运行资源只依赖cell基础，不依赖manager；Router无manager回调或prompt职责。
+- 剩余耦合：Scheduler的submit/Future callback、stop/grace/run状态协调仍在facade；UnitWorkflow的translation/review及repair业务仍在facade。保留原线程/锁/save时点，下一批实质workflow再迁。
+- 本批四生产文件与台账冻结ready供主 Agent验收提交；pipeline下一窗口交B check-only owner，A仅准备下一UnitWorkflow闭包清单和缺口测试，不改生产直到再次授权。

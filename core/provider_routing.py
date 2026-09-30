@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 if TYPE_CHECKING:
     from core.api_settings import ApiConfig
+    from core.project_state import ProjectStateCell
 
 
 class ConfigPort(Protocol):
@@ -86,4 +87,53 @@ def resolve_quality_channels(
         factories.editorial(config=settings.config_for_task("expression")),
         factories.resolution(config=settings.config_for_task("concept_disambiguation")),
     )
+
+
+
+class ProviderRouter:
+    """Select providers at each original stage, preserving injection read timing."""
+
+    def __init__(self, cell: ProjectStateCell, bindings: ProviderBindings, settings: ConfigPort,
+                 unit_factories: Callable[[], UnitFactories],
+                 quality_factories: Callable[[], QualityFactories]) -> None:
+        self.cell = cell
+        self.bindings = bindings
+        self.settings = settings
+        self.unit_factories = unit_factories
+        self.quality_factories = quality_factories
+
+    def unit_pair(self) -> tuple[Any, Any]:
+        with self.cell.lock:
+            provider_name = str(self.cell.state["config"].get("provider") or "demo")
+        return resolve_unit_pair(
+            provider_name,
+            self.bindings,
+            self.settings,
+            self.unit_factories(),
+        )
+
+    def quality_channels(self) -> tuple[Any, Any, Any, Any]:
+        """The four concept channels: generation, check, editorial, resolution.
+
+        The group-resolution channel is its own slot on purpose: the check
+        provider protocol has no ``resolve_group``, so borrowing the check object
+        only ever worked with the offline double. Both real and injected
+        providers are returned here. Each channel resolves its own task preset
+        (task choice first, otherwise its group's preset).
+        """
+
+        injected = (
+            self.bindings.quality_generation_provider,
+            self.bindings.quality_check_provider,
+            self.bindings.quality_editorial_provider,
+            self.bindings.quality_resolution_provider,
+        )
+        with self.cell.lock:
+            provider_name = str(self.cell.state.get("config", {}).get("provider") or "demo")
+        return resolve_quality_channels(
+            provider_name,
+            injected,
+            self.settings,
+            self.quality_factories(),
+        )
 
