@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping, Sequence
 
 from core.concept_content import content_signature, normalize_card_content
@@ -117,3 +118,46 @@ def stored_check_payload(
         model=model,
     )
     return payload
+
+
+def bound_check_request(
+    items: Sequence[Mapping[str, Any]],
+    unit_sources: Mapping[str, tuple[str, str]],
+    *,
+    max_cards: int,
+    max_units: int,
+    max_chars: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """The longest prefix of one request that fits every input bound.
+
+    The card count, the number of distinct source units the request would
+    cite and the characters of its candidates plus those sources are all
+    bounded, because one request slot says nothing about the payload size.
+    The remainder is returned as "not sent this time": it stays pending and
+    is carried by a later confirmation instead of being truncated inside a
+    request. Items are taken in their given (sorted) order, so the split is
+    deterministic and independent of dict iteration order.
+    """
+
+    kept: list[dict[str, Any]] = []
+    units: list[str] = []
+    chars = 0
+    for item in items:
+        if len(kept) >= max(1, int(max_cards)):
+            break
+        row_units = [
+            str(unit_id)
+            for unit_id in (item.get("unit_ids") or [])
+            if str(unit_id) in unit_sources and str(unit_id) not in units
+        ]
+        row_chars = len(json.dumps(item.get("draft") or {}, ensure_ascii=False)) + sum(
+            len(str((unit_sources.get(unit_id) or ("", ""))[0])) for unit_id in row_units
+        )
+        if len(units) + len(row_units) > max(1, int(max_units)):
+            break
+        if chars + row_chars > max(1, int(max_chars)):
+            break
+        kept.append(dict(item))
+        units.extend(row_units)
+        chars += row_chars
+    return kept, max(0, len(items) - len(kept))
