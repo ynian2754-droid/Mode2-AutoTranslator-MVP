@@ -23,7 +23,8 @@
 | A1 单元校验契约 | 实施者 A：`tests/test_pipeline_unit_contract.py` | 原逻辑 7/7；主 Agent 已独立复跑并通过测试验收 |
 | A2 校验纯函数提取 | 实施者 A：`pipeline.py`、`core/unit_validation.py` | 返工后主 Agent 验收并提交 `afba224` |
 | A3 Provider routing | 实施者 A：`pipeline.py`、`core/provider_routing.py`、A单元契约测试 | 主 Agent已验收并提交 `dd59816` |
-| A4 项目四资源cell | 实施者 A：`pipeline.py`、`core/project_state.py`、`tests/test_pipeline_state_contract.py` | 实施及联合验证通过，冻结供主 Agent提交 |
+| A4 项目四资源cell | 实施者 A：`pipeline.py`、`core/project_state.py`、`tests/test_pipeline_state_contract.py` | 已验收提交 `ecf1b64` |
+| A5 单元高风险生命周期 | 实施者 A：`tests/test_pipeline_unit_lifecycle.py` | 原unit逻辑10项已验收，冻结供主 Agent提交 |
 | B 概念内容领域 | 质量 Agent：其授权概念域文件、`tests/test_concept_domain_contract.py` | content `015b772`；candidate/消环 `57ff5e5` 均已验收提交 |
 | 验收台账 | 实施者 A：本文件 | 每阶段只维护此文件，不写 memory |
 | 后续领域与门面收敛 | 主 Agent 分配最小范围 | 尚未验收/完成 |
@@ -46,6 +47,7 @@
 
 - 提交 `015b772`；17 个定义 AST 同构、别名身份保持；65 Python、4 JS、51 Python 内存语法及9 JS syntax通过。
 - candidate/消环提交 `57ff5e5`；主 Agent 独立联合68 Python/4 JS通过，运行时含延迟导入 SCC=[]。importers 的环仅为 TYPE_CHECKING 边，不是运行时环。
+- quality公开scan/retry/persistence测试提交 `429cc30`；prepare/recovery/commit七项测试提交 `3ed3ca1`。
 - Git 提交使用命令级身份，不修改 Git 配置。
 
 ## A3 Provider routing 验收证据
@@ -66,6 +68,15 @@
 - 迁后专用6/6（0.047s）；联合98 Python（1.955s）/4 JS、57 Python内存compile/9 JS syntax、两种fresh import顺序、diff检查通过，包含B prepare七项新增测试。
 - 主 Agent独立实际diff及98 Python/4 JS、57 Python/9 JS syntax、runtime SCC=[]通过。本批冻结等待主 Agent提交。
 
+## A5 单元生命周期测试证据
+
+- 生产只读，仅新增单元生命周期测试。首批9/9（0.191s）；主 Agent要求消除私有freeze spy/alias断言，并补review stale revision，修改后10/10（0.206s）。
+- 公开入口覆盖manual edit→显式recheck及revision；retry保留原draft/review/feedback经过失败再成功消费；accepted-risk仍editable但不可direct review；prompt按T/R各stage冻结；公开reference_mode在T阻塞时automatic→manual，auto review保留automatic/frozen_empty旧snapshot内容，显式recheck用manual新snapshot。
+- result commit一次save失败保留原回滚差异：translation恢复feedback/manual参考且不自动review，不重调模型；review保留译文并拒绝成功verdict、不重调模型；成功事件被撤回。review返回前fixture在原lock改变revision时，PASS拒绝并以当前revision记录controller failure，原错误文案和事件保持。
+- 真实OpenAI-compatible adapter、api_client和repair loop使用fake urlopen HTTP envelopes运行：translation修复一次成功再review、三轮exhaustion无review、真实RepairControl stale source或公开stop在首次HTTP前阻止调用。socket guard、TemporaryDirectory、Event，无sleep。
+- A前次联合112 Python（2.087s）/4 JS、59 Python/9 JS syntax通过（含B新增卡片测试）；修正后主 Agent独立联合113 Python/4 JS、61 Python/9 JS syntax、runtime SCC=[]通过。
+- 已验收，测试及本台账冻结供主 Agent独立提交，不改B窗口production。
+
 ## 后续cell/execution已通过的设计边界
 
 - 唯一 `ProjectStateCell` 仅state引用、同一个原RLock、store、closed；state及_closed允许明确兼容property，领域每次读取cell.state动态看见项目替换。
@@ -75,9 +86,23 @@
 - Workflow迁移前提交实际needs表，再裁决UnitData/Requests/Reference是否需要实例；纯规则优先函数及显式数据。manual/save/decide与enqueue可保留facade原锁原子段协调，不为薄而破锁。
 - 现有request私有入口测试、glyph patch、ProjectSession.delete生命周期检查须继续可用；生命周期查询可以明确替代，不能用多层property复制全部runtime。
 
+## UnitWorkflow 实际needs与下一批候选
+
+| 归属 | 实际需要 | 下一步 |
+| --- | --- | --- |
+| UnitWorkflow | 四常驻对象：cell、UnitRequests、ProviderRouter、InvocationPort | 99行translate、117行review及其repair业务helpers；保留每个lock/provider/save时点 |
+| UnitRequests | cell动态state、ApiSettings窄prompt/config读取；SOURCE context、预算、role、reference freeze/store、feedback规则 | 先迁request及必需feedback函数，不独立造Reference服务 |
+| ProviderRouter | cell、bindings、settings、pipeline模块级factories supplier | stage取当前constructor，禁止bound manager callback |
+| InvocationTracker | cell、ExecutionRuntime；cancel_requested/begin/end/is_current四项端口 | Workflow不持Scheduler；repair_control/progress因unit业务留Workflow |
+| unit_state纯函数 | retained draft、suggestion normalize/extract、feedback backfill、find/failure/cancel/rollback规则 | 显式state/unit/clock，不造常驻UnitData服务 |
+| 基础写入 | save_project/append_event既有函数；普通module级clock supplier保持pipeline.now_iso patch | 不追加service、不合并领域事务 |
+
+- 四常驻对象依赖+普通clock函数的具体构造方式待主 Agent裁决；clock不能闭包manager。Scheduler→Workflow→Tracker单向，manual/save/decide/retry继续facade原锁协调。
+- 后续首批候选为unit_request与必要feedback/context/reference纯规则，约300旧逻辑行，最大600旧生产行；现有两个private request入口因旧测试可保持明确adapter，其他规则按实际调用点替换，不批量wrapper。
+
 ## 剩余项与下一门
 
-- A4已冻结待提交；随后pipeline写权临时交B迁quality card workflow，A并行补unit高风险characterization、实际needs表及纯unit domain，不写pipeline直到B小批结束。
+- A4已提交ecf1b64；A5测试已冻结待提交。B quality card workflow小批收尾后pipeline写权交回A，先裁决/迁unit requests+必要feedback纯规则，随后真正UnitWorkflow。
 - B content、candidate、消环已验收；B 后续先补 quality 公开行为 characterization，A 独占 pipeline 写权。
 - 后续调度、运行控制、项目/单元工作流、质量工作流等领域迁移，须逐批冻结文件归属及 characterization；不得通过万能 PipelineContext 暴露整个 manager 或 bound manager callbacks。
 - shared holder 最多为 state 引用、原 RLock、store、closed；领域使用限定端口；具体设计由主 Agent 验收。
