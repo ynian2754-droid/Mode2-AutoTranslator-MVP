@@ -24,6 +24,7 @@ from core.document_model import empty_document
 from core.docx_exporter import DocxExportError, DocxExporter
 from core.epub_exporter import EpubExportError, EpubExporter
 from core.exceptions import ConflictError, PipelineError
+from core.pipeline_output import OUTPUT_FORMATS
 from core import execution
 from core.execution import STOP_GRACE_SECONDS
 from core.unit_state import (
@@ -134,7 +135,6 @@ from providers.quality_provider import (
 
 QUALITY_SCAN_SCOPES = {"current", "selected", "continue"}
 
-OUTPUT_FORMATS = ("markdown", "text", "pdf", "epub", "docx")
 _UNSET = object()
 
 
@@ -179,6 +179,18 @@ def _execution_timer(*args: Any, **kwargs: Any) -> Any:
 
 def _execution_stop_grace() -> float:
     return STOP_GRACE_SECONDS
+
+
+def _output_export_resources() -> pipeline_output.OutputExportResources:
+    return pipeline_output.OutputExportResources(
+        AssemblyError,
+        DocxExportError,
+        DocxExporter,
+        EpubExportError,
+        PdfExportError,
+        EpubExporter,
+        PdfExporter,
+    )
 
 
 class PipelineManager:
@@ -252,9 +264,10 @@ class PipelineManager:
                 _new_invocation_id, _execution_stop_grace,
             ),
         )
-        # Read-only PDF glyph pre-check cache, keyed by a cheap state signature
-        # because the workbench polls the output status.
-        self._glyph_precheck_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
+        self._output = pipeline_output.OutputOwner(
+            self._project_state, self.assembler, self.runtime_dir,
+            _unit_request_clock, _output_export_resources,
+        )
         self._closed = False
         self.state = self._load_state()
 
@@ -604,8 +617,7 @@ class PipelineManager:
         result instead of pretending there is nothing to report.
         """
 
-        return pipeline_output.glyph_precheck_locked(
-            self,
+        return self._output.glyph_precheck_locked(
             pdf_math_font_path=PDF_MATH_FONT_PATH,
             load_fonts=load_pdf_fonts,
             scan_glyphs=scan_text_glyphs,
@@ -614,32 +626,21 @@ class PipelineManager:
 
     def output_status(self) -> dict[str, Any]:
         with self.lock:
-            return pipeline_output.output_status_locked(self, OUTPUT_FORMATS)
+            status = self._output.status_locked()
+            status["glyph_precheck"] = self._glyph_precheck_locked()
+            return status
 
     def generate_output(self, output_format: str | None = None) -> dict[str, Any]:
         with self.lock:
             self._ensure_open_locked()
-            return pipeline_output.generate_output_locked(
-                self,
-                output_format,
-                assembly_error=AssemblyError,
-                docx_export_error=DocxExportError,
-                docx_exporter=DocxExporter,
-                epub_export_error=EpubExportError,
-                pdf_export_error=PdfExportError,
-                epub_exporter=EpubExporter,
-                pdf_exporter=PdfExporter,
-            )
+            result = self._output.generate_locked(output_format)
+            result["readiness"] = self.output_status()
+            return result
 
     def output_file_path(self, output_format: str | None = None) -> Path:
         with self.lock:
-            return pipeline_output.output_file_path_locked(self, output_format)
+            return self._output.file_path_locked(output_format)
 
-    def _default_output_format_locked(self) -> str:
-        return pipeline_output.default_output_format_locked(self)
-
-    def _resolve_output_format_locked(self, value: Any | None) -> str:
-        return pipeline_output.resolve_output_format_locked(self, value, OUTPUT_FORMATS)
 
     def segmentation_settings(self) -> dict[str, Any]:
         with self.lock:
@@ -1026,7 +1027,6 @@ class PipelineManager:
 
 
 
-
     def start(self, unit_ids: list[str] | None = None) -> dict[str, Any]:
         return self._scheduler.start(unit_ids)
 
@@ -1056,7 +1056,6 @@ class PipelineManager:
     # here is shared between units, projects, translation and review.
 
     MODEL_REPAIR_KINDS = ("translation", "review")
-
 
 
 
@@ -1597,7 +1596,6 @@ class PipelineManager:
         )
 
 
-
     def update_quality_card(
         self,
         card_id: str,
@@ -1775,7 +1773,6 @@ class PipelineManager:
     # ------------------------------------------------------------------
     # R1: read-only preview
     # ------------------------------------------------------------------
-
 
 
     def _quality_prepare_plan(
@@ -2258,7 +2255,6 @@ class PipelineManager:
             raise
         finally:
             self._finish_prepare(prepare_id)
-
 
     def _update_prepare_record_locked(
         self,
@@ -4238,7 +4234,6 @@ class PipelineManager:
         self._update_prepare_record_locked(support, prepare_id, mutate)
 
 
-
     def _quality_prepare_resolve(
         self,
         *,
@@ -4704,7 +4699,6 @@ class PipelineManager:
                 "revision": int(support.get("revision") or 0),
                 "summary": quality_prepare_record.prepare_summary_from_record(record),
             }
-
 
 
     def _prepare_view_locked(
