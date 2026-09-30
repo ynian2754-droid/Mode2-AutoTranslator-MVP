@@ -55,7 +55,7 @@ from core.importers import SourceImporter
 from core.pdf_exporter import PdfExportError, PdfExporter
 from core.pdf_fonts import PDF_MATH_FONT_PATH, load_pdf_fonts
 from core.pdf_glyph_support import scan_text_glyphs, unavailable_scan
-from core import pipeline_output
+from core import pipeline_output, unit_validation
 from core.project_factory import DEFAULT_SAMPLE_SOURCE, ProjectFactory, empty_output_state
 from core.segmenter import DEFAULT_TARGET_WORDS, MarkdownSegmenter, validate_target_words
 from core.storage import ProjectStore
@@ -1863,56 +1863,6 @@ class PipelineManager:
             system_prompt=self.api_settings.prompt_for_task("unit_review"),
         )
 
-    def _validate_translation_result(self, unit: dict[str, Any], result: TranslationResult) -> None:
-        if result.unit_id != unit["id"]:
-            raise PipelineError("翻译结果 unit_id 不匹配，已拒绝导入。")
-        if result.source_sha256 != unit["source_sha256"]:
-            raise PipelineError("翻译结果源文哈希不匹配，已拒绝导入。")
-        if not result.translated_text or not result.translated_text.strip():
-            raise PipelineError("翻译结果为空，已拒绝导入。")
-
-    def _validate_review_result(self, unit: dict[str, Any], result: ReviewResult) -> None:
-        if result.unit_id != unit["id"]:
-            raise PipelineError("校验结果 unit_id 不匹配，已拒绝导入。")
-        if result.source_sha256 != unit["source_sha256"]:
-            raise PipelineError("校验结果源文哈希不匹配，已拒绝导入。")
-        if result.verdict not in {"PASS", "FAIL"}:
-            raise PipelineError("校验结果 verdict 无效，已拒绝导入。")
-        if not isinstance(result.issues, list):
-            raise PipelineError("校验结果 issues 必须是数组，已拒绝导入。")
-        if not isinstance(result.metrics, dict):
-            raise PipelineError("校验结果 metrics 必须是对象，已拒绝导入。")
-
-        has_error = False
-        required_issue_keys = {"rule", "severity", "block_id", "message", "evidence"}
-        for index, issue in enumerate(result.issues):
-            if not isinstance(issue, dict) or set(issue) != required_issue_keys:
-                raise PipelineError(f"校验结果 issues[{index}] 结构无效，已拒绝导入。")
-            if not isinstance(issue["rule"], str) or not issue["rule"].strip():
-                raise PipelineError(f"校验结果 issues[{index}].rule 无效，已拒绝导入。")
-            if issue["severity"] not in {"error", "warning"}:
-                raise PipelineError(f"校验结果 issues[{index}].severity 无效，已拒绝导入。")
-            if issue["block_id"] != unit["id"]:
-                raise PipelineError(f"校验结果 issues[{index}].block_id 不匹配，已拒绝导入。")
-            if not isinstance(issue["message"], str) or not issue["message"].strip():
-                raise PipelineError(f"校验结果 issues[{index}].message 无效，已拒绝导入。")
-            if not isinstance(issue["evidence"], dict):
-                raise PipelineError(f"校验结果 issues[{index}].evidence 无效，已拒绝导入。")
-            if issue["severity"] == "error":
-                suggestion = issue["evidence"].get("suggestion")
-                if not isinstance(suggestion, str) or not suggestion.strip():
-                    raise PipelineError(
-                        f"校验结果 issues[{index}].evidence.suggestion 在 error issue 中必须是非空字符串，已拒绝导入。"
-                    )
-            has_error = has_error or issue["severity"] == "error"
-
-        if not result.issues and result.verdict != "PASS":
-            raise PipelineError("没有 issue 时 verdict 必须是 PASS，已拒绝导入。")
-        if has_error and result.verdict != "FAIL":
-            raise PipelineError("包含 error issue 时 verdict 必须是 FAIL，已拒绝导入。")
-        if result.verdict == "FAIL" and not has_error:
-            raise PipelineError("verdict 为 FAIL 时必须包含 error issue，已拒绝导入。")
-
     def _mark_failure_locked(self, unit_id: str, rule: str, message: str) -> None:
         unit = self._find_unit_locked(unit_id)
         self._ensure_unit_feedback_fields_locked(unit)
@@ -2293,7 +2243,7 @@ class PipelineManager:
                     self._mark_cancelled_locked(unit_id)
                     self._save_locked()
                     return
-            self._validate_translation_result(unit, result)
+            unit_validation.validate_translation_result(unit, result)
         except Exception as exc:
             with self.lock:
                 self._end_invocation_locked(unit_id, "translation", invocation_id)
@@ -2408,7 +2358,7 @@ class PipelineManager:
                 current = self._find_unit_locked(unit_id)
                 if current.get("translation_revision") != review_revision:
                     raise PipelineError("校验结果对应的译文版本已经变化，已拒绝导入。")
-                self._validate_review_result(current, result)
+                unit_validation.validate_review_result(current, result)
         except Exception as exc:
             with self.lock:
                 self._end_invocation_locked(unit_id, "review", invocation_id)
