@@ -339,6 +339,23 @@
     "准备状态：": "Preparation status: ",
     "请求已返回错误，但服务器确认任务仍在运行；页面会继续只读观察。": "The request returned an error, but the server confirmed the task is still running. Read-only monitoring will continue.",
     "批次": "Batches",
+    "失败批次": "Failed batches",
+    "全选可重试批次": "Select all retryable batches",
+    "并行批次": "Parallel batches",
+    "错误记录": "Error records",
+    "记录数不是失败单元数；一个批次可能包含多个单元。": "The record count is not the number of failed units; a batch may contain multiple units.",
+    "本批已经完成，无需重试。": "This batch is already complete. No retry is needed.",
+    "失败批次集中重试": "Bulk retry failed batches",
+    "集中重试并行批次": "Parallel batches for bulk retry",
+    "不影响使用仍有效的参考继续翻译。": "You can continue translating with references that are still valid.",
+    "未解决的问题影响全部条目，整张卡不自动采用。": "Unresolved questions affect the entire entry, so the whole card is not adopted automatically.",
+    "当前草稿没有独立检查结论。": "The current draft has no independent review result.",
+    "独立检查结论不是 supported。": "The independent review result is not supported.",
+    "组辨析没有给这张卡分配任何单元，本次不采用。": "Group resolution assigned no units to this card, so it was not adopted this time.",
+    "组辨析未确定，本次不采用该组的自动参考。": "Group resolution is incomplete, so this group's automatic references were not adopted this time.",
+    "仍有未解决的含义问题，且无法隔离到具体条目，整张卡不自动采用。": "Unresolved meaning questions cannot be isolated to specific entries, so the whole card is not adopted automatically.",
+    "仍有未解决的证据问题，且无法隔离到具体条目，整张卡不自动采用。": "Unresolved evidence questions cannot be isolated to specific entries, so the whole card is not adopted automatically.",
+    "仍有未解决的偏好问题，且无法隔离到具体条目，整张卡不自动采用。": "Unresolved preference questions cannot be isolated to specific entries, so the whole card is not adopted automatically.",
     "张卡": "cards",
     "次请求": "requests",
     "组": "groups",
@@ -832,7 +849,46 @@
     accepted_risk: "Risk accepted", cancelled: "Stopped",
   }[status] || status);
 
+  function translateExtraActionDetails(details) {
+    const sections = details.split(/ · (?=(?:旧检查重查|有界补查|同内容同依据已查过|大组局部辨析|争用集合超限单元|整组超限))/);
+    return sections.map((section) => {
+      const lookup = section.match(/^有界补查 (\d+) 次（命中 (\d+)，无命中卡 (\d+)(?:；(.+))?）$/);
+      if (!lookup) return translate(section);
+      const [, rounds, hits, misses, outcomes] = lookup;
+      const extra = outcomes
+        ? outcomes.replace(/^；/, "").split(" · ").map(translate).join(" · ")
+        : "";
+      return `Bounded ${Number(rounds) === 1 ? "lookup" : "lookups"}: ${rounds} · ${hits} matched · ${misses} cards unmatched${extra ? ` · ${extra}` : ""}`;
+    }).join(" · ");
+  }
+
   const PATTERNS_EXTRA = [
+    [/^批次 (.+)：概念候选生成失败：API 请求超时，请检查请求超时设置或网络连接。$/, (_, batchId) => `Batch ${batchId}: Concept candidate generation failed: API request timed out. Check the request timeout setting or network connection.`],
+    [/^概念候选生成失败：API 请求超时，请检查请求超时设置或网络连接。$/, () => `Concept candidate generation failed: API request timed out. Check the request timeout setting or network connection.`],
+    [/^([\d,]+) 张卡$/, (_, n) => countLabel(n, "card", "cards")],
+    [/^完成数量中包含 (\d+) 个复用单元。$/, (_, n) => `Completed count includes ${countLabel(n, "reused unit", "reused units")}.`],
+    [/^额外动作：(.+)$/, (_, details) => `Extra actions: ${translateExtraActionDetails(details)}`],
+    [/^旧检查重查 (\d+)(?: · 仍待重查 (\d+))?$/, (_, done, pending) => `Older checks reviewed: ${done}${pending ? ` · ${pending} still need review` : ""}`],
+    [/^有界补查 (\d+) 次（命中 (\d+)，无命中卡 (\d+)(?:；(.+))?）$/, (_, rounds, hits, misses, outcomes) => `Bounded ${Number(rounds) === 1 ? "lookup" : "lookups"}: ${rounds} · ${hits} matched · ${misses} cards unmatched${outcomes ? ` · ${outcomes.replace(/^；/, "").split(" · ").map(translate).join(" · ")}` : ""}`],
+    [/^同内容同依据已查过 (\d+) 张卡（不重复调用）$/, (_, n) => `Already checked ${countLabel(n, "card", "cards")} with the same content and evidence (no duplicate request)`],
+    [/^大组局部辨析 (\d+) 组 \/ 本次判断 (\d+) 个单元(?: · 复用已判 (\d+) 个)?$/, (_, groups, units, reused) => `Large-group partial resolution: ${groups} groups · ${units} units assessed this time${reused ? ` · reused ${reused} completed judgments` : ""}`],
+    [/^单元局部辨析 (\d+)$/, (_, n) => `Unit-level partial resolution ${n}`],
+    [/^超范围补查 (\d+) 张卡$/, (_, n) => `Over-limit lookup: ${countLabel(n, "card", "cards")}`],
+    [/^争用集合超限单元 (\d+)$/, (_, n) => `Units in oversized contention groups: ${n}`],
+    [/^整组超限 (\d+)$/, (_, n) => `Oversized groups: ${n}`],
+    [/^写入 (\d+) 张$/, (_, n) => `${countLabel(n, "card", "cards")} written`],
+    [/^写入被拒 (\d+) 张$/, (_, n) => `${countLabel(n, "write", "writes")} rejected`],
+    [/^请求失败 (\d+) 张$/, (_, n) => `${countLabel(n, "request", "requests")} failed`],
+    [/^未采用原因：(.+)$/, (_, sourceReasons) => `Reasons not adopted: ${sourceReasons.split("；").map(item => {
+      const match = item.match(/^(.*)（(\d+)）$/);
+      return match ? `${translate(match[1])} (${match[2]})` : translate(item);
+    }).join("; ")}`],
+    [/^(\d+) 个可重试$/, (_, n) => `${countLabel(n, "available for retry", "available for retry")}`],
+    [/^重试选中的 (\d+) 批$/, (_, n) => `Retry selected ${countLabel(n, "batch", "batches")}`],
+    [/^已选 (\d+) 批$/, (_, n) => `${countLabel(n, "batch", "batches")} selected`],
+    [/^当前不可重试 (\d+) 批$/, (_, n) => `${countLabel(n, "batch", "batches")} cannot be retried`],
+    [/^(生成候选|独立检查) · (.+)$/, (_, stage, id) => `${EN[stage]} · ${id}`],
+    [/^(\d+) 条$/, (_, n) => countLabel(n, "item", "items")],
     [/^本任务范围：(\d+) 个单元$/, (_, n) => `Task scope: ${stageUnit("个单元", n)}`],
     [/^(\d+) 个失败批次可重试 · 查看并选择$/, (_, n) => `${countLabel(n, "failed batch", "failed batches")} available for retry · review and select`],
     [/^批量重译并复检 (\d+) 个单元$/, (_, n) => `Re-translate and review ${stageUnit("个单元", n)}`],
@@ -961,7 +1017,7 @@
     [/^有界补查 (\d+) 次（命中 (\d+)，无命中卡 (\d+)$/, (_, rounds, hits, misses) => `Bounded lookups: ${rounds} (hits ${hits}, cards with no match ${misses})`],
     [/^大组局部辨析 (\d+) 组 \/ 本次判断 (\d+) 个单元$/, (_, groups, units) => `Large-group partial resolution: ${groups} groups / ${units} units assessed this time`],
     [/^额外请求预算：(\d+) \/ (\d+) 次(.+)$/, (_, used, limit, hint) => `Extra request budget: ${used} of ${limit}${hint}`],
-    [/^预算未完成：(.+)（可继续翻译；再次确认会从这些未完成项继续，已完成的不会重做）$/, (_, tasks) => `Unfinished within budget: ${tasks} (translation can continue; confirming again resumes these items without repeating completed work)`],
+    [/^预算未完成：(.+)（可继续翻译；再次确认会从这些未完成项继续，已完成的不会重做）$/, (_, tasks) => `Unfinished within budget: ${tasks.split(" · ").map(translate).join(" · ")} (translation can continue; confirming again resumes these items without repeating completed work)`],
     [/^失败单元：(\d+)（失败的批次不参与自动采用）$/, (_, n) => `Failed units: ${n} (failed batches are not adopted automatically)`],
     [/^计划已就绪：需处理 (\d+) 个、复用 (\d+) 个。$/, (_, work, reused) => `Plan ready: ${work} to process, ${reused} to reuse.`],
     [/^准备状态：(.*?)。请查看流程详情。$/, (_, status) => `Preparation status: ${status}. Check the workflow details.`],

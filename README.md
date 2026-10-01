@@ -8,6 +8,8 @@
 
 Mode2 breaks long documents into traceable translation units, translates them in parallel, and checks each result with a separately configured reviewer. You can inspect or edit units before export. Optional concept preparation helps keep meaning and terminology consistent across the document. Connect your own OpenAI-compatible APIs.
 
+**Latest release: v0.2.4 (2026-10-01).** This release reorganizes the pipeline internals, reduces redundant work when loading large concept projects, and completes English translations across the quality results page. See the [bilingual release notes](CHANGELOG.md).
+
 **中文速览：** 本地导入与切分文档，可先做概念辨析，再并行翻译、独立校验、人工审阅并导出。[查看完整中文说明](#simplified-chinese)。
 
 **[Download the latest Windows ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [Quick start](#quick-start-windows) · [English user guide](USER_GUIDE.en.md) · [简体中文手册](USER_GUIDE.md)
@@ -106,7 +108,7 @@ The app does not bundle an API key or model. When you test an endpoint or run tr
 
 ## Documentation and license
 
-The [English user guide](USER_GUIDE.en.md) and [Simplified Chinese guide](USER_GUIDE.md) cover installation, API setup, concept preparation, translation, review, export, and troubleshooting. [Screenshot notes](docs/images/README_SCREENSHOTS.md) identify the demo images and their limits.
+The [English user guide](USER_GUIDE.en.md) and [Simplified Chinese guide](USER_GUIDE.md) cover installation, API setup, concept preparation, translation, review, export, and troubleshooting. The [bilingual release notes](CHANGELOG.md) describe changes by version. [Screenshot notes](docs/images/README_SCREENSHOTS.md) identify the demo images and their limits.
 
 Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF fonts retain their upstream licenses; see [third-party notices](THIRD_PARTY_NOTICES.md) and the license files under `assets/fonts/pdf/`.
 
@@ -119,6 +121,8 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 **Mode2 AutoTranslator 是在 Windows 本机运行、可逐单元审阅的文档翻译工作台。** 它把文档切成可追踪单元；翻译前可以先辨析原文概念、核对候选和证据，为适用单元准备含义与术语参考。随后并行翻译、独立校验，留给人逐段修改、复检或明确接受风险，最后导出完整文档。模型服务由你通过 OpenAI-compatible API 配置。
 
 **[下载最新 Release ZIP](https://github.com/ynian2754-droid/Mode2-AutoTranslator-MVP/releases/latest)** · [产品截图](#screenshots) · [使用与排错指南](USER_GUIDE.md) · [English user guide](USER_GUIDE.en.md)
+
+**最新版本：v0.2.4（2026-10-01）。** 本版拆分了 pipeline 内部职责、减少大型概念项目加载时的重复处理，并补齐质量结果页的英文界面。[查看中英双语更新说明](CHANGELOG.md)。
 
 ### 为什么用 Mode2
 
@@ -154,4 +158,4 @@ Original source code and documentation are [MIT licensed](LICENSE). Bundled PDF 
 
 ### 文档与许可
 
-[英文使用手册](USER_GUIDE.en.md)与[简体中文使用手册](USER_GUIDE.md)包含安装、接口设置、概念准备、翻译、校验、导出和排错。本项目自有源码与文档采用 [MIT License](LICENSE)；内置 PDF 字体保留上游许可，见[第三方组件说明](THIRD_PARTY_NOTICES.md)。
+[英文使用手册](USER_GUIDE.en.md)与[简体中文使用手册](USER_GUIDE.md)包含安装、接口设置、概念准备、翻译、校验、导出和排错；各版本变化见[中英双语更新日志](CHANGELOG.md)。本项目自有源码与文档采用 [MIT License](LICENSE)；内置 PDF 字体保留上游许可，见[第三方组件说明](THIRD_PARTY_NOTICES.md)。
