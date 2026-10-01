@@ -1,26 +1,21 @@
-"""Persistent concurrent translation pipeline for the Mode2 MVP.
+"""Persistent translation API facade over explicit project and domain owners.
 
-The controller keeps the source binding and state transitions local. Providers
-only receive one unit at a time, so translation and review can be replaced
-independently without changing the web layer.
+PipelineManager assembles the shared state cell, execution and quality resources,
+then delegates domain workflows while retaining project replacement, scheduler,
+and output coordination at their original lock and persistence boundaries.
 """
 
 from __future__ import annotations
 
 import copy
-import json
 import threading
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import mode2_common
 from core.api_settings import ApiSettingsStore
 from core.assembler import AssemblyError, DocumentAssembler
-from core import concept_automation
-from core.document_model import empty_document
 from core.docx_exporter import DocxExportError, DocxExporter
 from core.epub_exporter import EpubExportError, EpubExporter
 from core.exceptions import ConflictError, PipelineError
@@ -37,26 +32,11 @@ from core.execution_runtime import ExecutionRuntime, InvocationTracker
 from core.editorial_workflow import EditorialWorkflow
 from core.unit_workflow import UnitWorkflow
 from core.unit_commands import UnitCommands
-from core import quality_prepare_plan, quality_prepare_record
-from core.quality_limits import (
-    DEFAULT_ADDITIONAL_WORK_LIMIT,
-    MAX_RECHECK_CARDS,
-    MAX_LOOKUP_UNITS_PER_EXPRESSION,
-    MAX_CHECK_REQUEST_UNITS,
-    MAX_CHECK_REQUEST_CHARS,
-    MAX_LOOKUP_CARDS,
-    resolve_parallel_batches,
-    resolve_additional_work_limit,
-)
 from core.quality_batches import QualityBatchWorkflow
 from core.quality_queries import QUALITY_SCAN_SCOPES, QualityQueries
 from core.quality_cards import (
-    QUALITY_ACTION_LABELS,
-    QUALITY_BATCH_ACTIONS,
-    QUALITY_CARD_ACTIONS,
     QualityCards,
 )
-from core import quality_recovery, quality_requests
 from core.quality_prepare_state import PrepareState
 from core.quality_prepare_views import PrepareViews
 from core.quality_prepare import PrepareCoordinator
@@ -66,50 +46,15 @@ from core.quality_commit import PrepareCommit
 from core.quality_resolution import PrepareResolution
 from core.quality_progress import PrepareProgress
 from core.quality_runtime import QualityRuntime
-from core.quality_state import commit_quality_support, quality_unit_sources
-from core.quality_support import (
-    DEFAULT_SCAN_SOURCE_WORDS,
-    MAX_BATCH_CARD_ACTIONS,
-    PROMPT_VERSION,
-    QualitySupportError,
-    content_signature,
-    normalize_card_content,
-    affected_units_for_cards,
-    apply_card_decision,
-    apply_check_result,
-    batch_approval_problems,
-    batch_retry_descriptor,
-    batch_retry_state,
-    build_reference_snapshot,
-    normalize_batch_retry,
-    normalize_quality_support,
-    planned_batches,
-    record_batch,
-    refresh_check_result,
-    scanned_unit_ids,
-    select_reference_candidates,
-    select_reference_cards,
-    summarize_counts,
-    terminology_mismatches,
-    terminology_rules,
-    upsert_candidate,
-)
 from core.importers import SourceImporter
 from core.pdf_exporter import PdfExportError, PdfExporter
 from core.pdf_fonts import PDF_MATH_FONT_PATH, load_pdf_fonts
 from core.pdf_glyph_support import scan_text_glyphs, unavailable_scan
-from core import pipeline_output, project_settings, project_state, provider_routing, unit_requests, unit_state, unit_validation
-from core.project_factory import DEFAULT_SAMPLE_SOURCE, ProjectFactory, empty_output_state
+from core import pipeline_output, project_settings, project_state, provider_routing, unit_requests, unit_state
+from core.project_factory import DEFAULT_SAMPLE_SOURCE, ProjectFactory
 from core.project_loading import ProjectLoader
-from core.segmenter import DEFAULT_TARGET_WORDS, MarkdownSegmenter, validate_target_words
+from core.segmenter import MarkdownSegmenter
 from core.storage import ProjectStore
-from core.translation_context import (
-    MAX_CONTEXT_WORDS,
-    build_translation_context,
-    configured_context_words,
-    default_context_words,
-    validate_context_words,
-)
 from core.utils import now_iso
 
 from providers.api_provider import (
@@ -118,31 +63,16 @@ from providers.api_provider import (
 )
 from providers.base import (
     ReviewRequest,
-    ReviewResult,
     TranslationRequest,
-    TranslationResult,
 )
 from providers.demo_provider import DemoReviewProvider, DemoTranslationProvider
-from providers.repair_loop import (
-    ContentRepairExhausted,
-    RepairControl,
-    RepairProgress,
-)
 from providers.quality_provider import (
-    ConceptCheckRequest,
-    ConceptScanRequest,
-    ConceptUnitRef,
-    EditorialSuggestionRequest,
     FakeQualityProvider,
     OpenAICompatibleConceptCheckProvider,
     OpenAICompatibleConceptGenerationProvider,
     OpenAICompatibleConceptResolutionProvider,
     OpenAICompatibleEditorialSuggestionProvider,
-    QualityProviderError,
-    normalize_resolution,
 )
-
-
 
 
 _UNSET = project_settings._UNSET
@@ -394,19 +324,6 @@ class PipelineManager:
     @quality_resolution_provider.setter
     def quality_resolution_provider(self, value: Any | None) -> None:
         self._provider_bindings.quality_resolution_provider = value
-
-
-
-
-
-
-    #: The controller authors a review when an attempt fails technically
-    #: (transport error, a payload the strict gate rejected). Such a record
-    #: describes *that attempt*; it is never the review of a saved draft.
-    _TECHNICAL_REVIEW_PROVIDER = "controller"
-
-
-
 
 
     def _save_locked(self) -> None:
@@ -734,10 +651,6 @@ class PipelineManager:
             self._closed = True
 
 
-
-
-
-
     def start(self, unit_ids: list[str] | None = None) -> dict[str, Any]:
         return self._scheduler.start(unit_ids)
 
@@ -760,23 +673,7 @@ class PipelineManager:
         return self._unit_requests.review_locked(unit, snapshot)
 
 
-    # --- bounded model-repair invocation bookkeeping -----------------------
-    #
-    # The provider owns the message history; the controller only publishes the
-    # per-execution summary and guards against stale notifications.  Nothing
-    # here is shared between units, projects, translation and review.
-
     MODEL_REPAIR_KINDS = ("translation", "review")
-
-
-
-
-
-
-
-
-
-
 
 
     def save_translation(
@@ -832,8 +729,6 @@ class PipelineManager:
     # ------------------------------------------------------------------
 
 
-
-
     def stale_reference_units_locked(
         self,
         support: Mapping[str, Any],
@@ -878,8 +773,6 @@ class PipelineManager:
             max_parallel_batches=max_parallel_batches, max_source_words=max_source_words,
             expected_project_id=expected_project_id,
         )
-
-
 
 
     def scan_quality_batch(
@@ -1046,44 +939,6 @@ class PipelineManager:
             expected_project_id=expected_project_id, expected_revision=expected_revision,
             additional_work_limit=additional_work_limit,
         )
-
-    # ------------------------------------------------------------------
-    # R1: read-only preview
-    # ------------------------------------------------------------------
-
-
-
-    # ------------------------------------------------------------------
-    # R6: the single active prepare + lifecycle guard
-    # ------------------------------------------------------------------
-
-
-
-
-
-
-
-    # ------------------------------------------------------------------
-    # R1 + R5: the confirmed execution
-    # ------------------------------------------------------------------
-
-
-
-
-
-
-    # ------------------------------------------------------------------
-    # A2: the re-check of reused cards and the one bounded lookup
-    # ------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
 
 
     def quality_prepare_status(
