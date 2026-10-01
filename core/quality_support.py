@@ -556,6 +556,7 @@ def select_reference_candidates(
     unit_id: str,
     unit_sources: Mapping[str, tuple[str, str]],
     mode: str = "automatic",
+    decisions: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The candidate pool one unit may draw from under the project's mode.
 
@@ -570,7 +571,9 @@ def select_reference_candidates(
     cards = list(effective_cards(support))
     if str(mode or "").strip().casefold() != "automatic":
         return cards
-    return reference_cards_for_unit(support, unit_id=unit_id, unit_sources=unit_sources)
+    return reference_cards_for_unit(
+        support, unit_id=unit_id, unit_sources=unit_sources, decisions=decisions
+    )
 
 
 def reference_cards_for_unit(
@@ -578,6 +581,7 @@ def reference_cards_for_unit(
     *,
     unit_id: str,
     unit_sources: Mapping[str, tuple[str, str]],
+    decisions: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every reference candidate one unit may see, manual first.
 
@@ -594,7 +598,7 @@ def reference_cards_for_unit(
         merged.append((0, priority, str(card.get("id") or ""), card))
     if str(unit_id) in unit_sources:
         for item in _automation.auto_reference_cards(
-            support, unit_id=str(unit_id), unit_sources=unit_sources
+            support, unit_id=str(unit_id), unit_sources=unit_sources, decisions=decisions
         ):
             card = (support.get("cards") or {}).get(item["card_id"])
             payload = item.get("payload") or {}

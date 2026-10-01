@@ -145,7 +145,8 @@ class QualityQueries:
             if not unit_id or not source_text:
                 continue
             candidates = select_reference_candidates(
-                support, unit_id=unit_id, unit_sources=sources, mode=reference_mode
+                support, unit_id=unit_id, unit_sources=sources, mode=reference_mode,
+                decisions=automation["decisions"],
             )
             projection = terminology_rules(candidates, source_text)
             term_conflict_rows.extend(

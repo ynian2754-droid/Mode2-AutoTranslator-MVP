@@ -148,7 +148,7 @@ async function qLoad(initial=false) {
     $("nextCount").max=String(qp.units.length); $("totalCount").textContent=`共 ${qp.units.length} 个`;
     if(initial){qp.batch.clear();qp.group="";qWriteReset();}
     qInvalidate(); qRenderUnits(); qRenderCards(); qRenderTerminologyAudit(); qRestoreCardDetailOpenState(cardDetailOpen); qRenderHistory(); qRenderPrepare();
-    if(qp.observedPrepareId) await qPollPrepareStatus({manual:true});
+    if(qp.observedPrepareId) await qPollPrepareStatus({manual:true, loadedPrepare:support.prepare});
   } catch (error) { qPageError(error.message); }
   finally { qSetBusy(false); }
 }
@@ -1312,7 +1312,7 @@ function qInvalidatePrepareStatusReads() {
   qStatusController = null;
   qStatusInFlight = null;
 }
-function qMergePrepareStatus(payload) {
+function qMergePrepareStatus(payload, loadedPrepare=null) {
   if (!payload || String(payload.project_id || "") !== String(qp.runtimeId || "")) return false;
   const incomingId = String(payload.prepare_id || "") || null;
   if (qp.observedPrepareId && incomingId !== qp.observedPrepareId) return false;
@@ -1345,9 +1345,14 @@ function qMergePrepareStatus(payload) {
   if (typeof qControls === "function") qControls();
   if (incomingId && payload.active !== true && qp.prepareTerminalRefreshedId !== incomingId) {
     qp.prepareTerminalRefreshedId = incomingId;
+    // qLoad already fetched the result. Skip only when the status read confirms
+    // that exact terminal summary; a transition or changed result still refreshes.
+    const alreadyLoaded=qIsTerminalPrepareSnapshot(payload) && loadedPrepare
+      && String(loadedPrepare.prepare_id||"")===incomingId
+      && JSON.stringify(loadedPrepare)===JSON.stringify(payload.prepare);
     // Refresh results once at terminal state. qRefreshSupport captures the
     // open card draft before rendering it again; routine progress never calls it.
-    qRefreshSupport().catch(error => {
+    if(!alreadyLoaded) qRefreshSupport().catch(error => {
       qp.connectionIssue = `任务结果已确认，但概念数据刷新失败：${error.message}`;
       qRenderPrepare();
     });
@@ -1378,7 +1383,7 @@ async function qPollPrepareStatus(options={}) {
     try {
       const payload = await qRequest(qPrepareStatusPath(), undefined, undefined, {signal: controller.signal});
       if (epoch !== qStatusEpoch || requestedId !== qp.observedPrepareId) return null;
-      const accepted = qMergePrepareStatus(payload);
+      const accepted = qMergePrepareStatus(payload, options.loadedPrepare);
       if (!accepted) {
         const sameIdentity=String(payload?.project_id||"")===String(qp.runtimeId||"")
           && String(payload?.prepare_id||"")===String(qp.observedPrepareId||"");

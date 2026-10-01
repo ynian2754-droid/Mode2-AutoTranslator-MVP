@@ -1047,6 +1047,7 @@ def auto_reference_cards(
     *,
     unit_id: str,
     unit_sources: Mapping[str, tuple[str, str]],
+    decisions: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Cards that may serve as automatic references for one unit.
 
@@ -1059,7 +1060,11 @@ def auto_reference_cards(
 
     cards = support.get("cards") or {}
     results: list[dict[str, Any]] = []
-    for card_id, decision in sorted(current_decisions(support).items()):
+    # A read-only report can reuse decisions normalized from its own support
+    # snapshot. Eligibility is still checked against the live card and sources.
+    if decisions is None:
+        decisions = current_decisions(support)
+    for card_id, decision in sorted(decisions.items()):
         card = cards.get(card_id)
         if not isinstance(card, dict):
             continue
