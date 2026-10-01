@@ -16,7 +16,7 @@ from core.quality_support import (
     build_reference_snapshot, normalize_quality_support,
     select_reference_candidates, select_reference_cards, terminology_rules,
 )
-from core.translation_context import build_translation_context, configured_context_words
+from core.translation_context import build_translation_context
 from providers.base import ReviewRequest, TranslationRequest
 
 
@@ -24,29 +24,11 @@ class PromptSettingsPort(Protocol):
     def prompt_for_task(self, task: str) -> str: ...
 
 
-def configured_context_words_for_state(state: Mapping[str, Any]) -> tuple[int, int]:
-    """The persisted per-side source-context budgets of this project.
-
-        A missing or malformed value falls back to the documented
-        target-derived default (see ``core.translation_context``), so a legacy
-        project keeps working without rewriting its config.
-        """
-
-    config = state.get("config", {})
-    target_words = project_settings.configured_target_words(config)
-    return (
-        configured_context_words(
-            config, field_name="previous_context_words", target_words=target_words
-        ),
-        configured_context_words(
-            config, field_name="next_context_words", target_words=target_words
-        ),
-    )
 
 def unit_translation_context(state: Mapping[str, Any], unit: Mapping[str, Any]) -> dict[str, str]:
     """The previous/next SOURCE context of one unit under the saved budget."""
 
-    previous_words, next_words = configured_context_words_for_state(state)
+    previous_words, next_words = project_settings.configured_context_words_for_state(state)
     return build_translation_context(
         state["units"],
         unit["id"],
@@ -89,7 +71,7 @@ def freeze_reference(
         projects keep receiving the same messages as before.
         """
     support = normalize_quality_support(state.get("quality_support"))
-    previous_words, next_words = configured_context_words_for_state(state)
+    previous_words, next_words = project_settings.configured_context_words_for_state(state)
     context_budget = {
         "previous_context_words": previous_words,
         "next_context_words": next_words,

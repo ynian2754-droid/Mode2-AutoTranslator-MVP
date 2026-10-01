@@ -187,3 +187,13 @@
 - 动态clock为既有_unit_request_clock，在调用时读取pipeline.now_iso；legacy max_segment_words只读不改canonical；manifest仅id/order/hash全绑定匹配回填，不替换unit。
 - 7项目契约离线通过（0.203s）；两生产文件内存syntax与git diff --check通过。重切分成功仍先save再snapshot/stats刷新，磁盘stats={}及返回投影的旧行为保留。
 - 本批冻结供主Agent完整AST/全套离线验收后提交；当前架构迁移继续进行，尚未宣布最终完成或真实宿主验收。
+
+
+## 项目设置领域迁移
+
+- loader批已验收提交a9e768a；quality resolution已验收提交94021a8。本批仅pipeline、既有project_settings/unit_requests、4项settings characterization及台账。
+- project_settings承接3个纯读取、canonical/legacy输入解析、并发数解析、2个调用方锁内配置写入；共用context预算helper从unit_requests迁到settings，两request调用直接转新归属，无反向import环。
+- facade读取仍保原RLock；context/segmentation更新仍原outerlock→领域apply/save→publicread nested RLock。concurrency更新仅解析归settings，原idle guard/close_executor/config/event/save与返回read顺序全留原锁协调段。
+- _UNSET唯一对象归settings，pipeline直接alias保持身份及公开默认参数；两个旧private resolver定义及临时unit_requests import alias删除。没有增加常驻settings服务、校验分支或fallback。
+- 原4项settings characterization迁前0.044s全过；迁后4settings0.047s、7project0.195s、10unit lifecycle0.194s全过；4文件内存syntax及diff检查通过。只调用明确离线provider，状态位于TemporaryDirectory。
+- 本批冻结供主Agent验收；manual领域接线下一批，最终文档会统一重写为当前架构和交付证据。

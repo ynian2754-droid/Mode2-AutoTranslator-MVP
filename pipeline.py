@@ -139,7 +139,7 @@ from providers.quality_provider import (
 
 QUALITY_SCAN_SCOPES = {"current", "selected", "continue"}
 
-_UNSET = object()
+_UNSET = project_settings._UNSET
 
 
 def _unit_request_clock() -> str:
@@ -389,23 +389,6 @@ class PipelineManager:
 
 
 
-    @staticmethod
-    def _resolve_explicit_target_words(
-        target_segment_words: Any | None,
-        max_segment_words: Any | None,
-    ) -> int | None:
-        """Resolve explicit new/legacy arguments and reject disagreement."""
-        if target_segment_words is not None and max_segment_words is not None:
-            target = validate_target_words(target_segment_words)
-            legacy = validate_target_words(max_segment_words)
-            if target != legacy:
-                raise ValueError("target_segment_words 与 max_segment_words 必须一致。")
-            return target
-        if target_segment_words is not None:
-            return validate_target_words(target_segment_words)
-        if max_segment_words is not None:
-            return validate_target_words(max_segment_words)
-        return None
 
     #: The controller authors a review when an attempt fails technically
     #: (transport error, a payload the strict gate rejected). Such a record
@@ -466,33 +449,13 @@ class PipelineManager:
 
     def segmentation_settings(self) -> dict[str, Any]:
         with self.lock:
-            target_words = project_settings.configured_target_words(self.state.get("config", {}))
-            return {
-                "target_words": target_words,
-                "max_words": target_words,
-                "default_target_words": DEFAULT_TARGET_WORDS,
-                "default_max_words": DEFAULT_TARGET_WORDS,
-                "target_is_hard_limit": False,
-                "sentence_boundary_priority": True,
-                "emergency_fallback": "unterminated_oversized_text",
-                "project_name": self.state.get("project", {}).get("name"),
-            }
+            return project_settings.segmentation_settings(self.state)
 
     def concurrency_settings(self) -> dict[str, Any]:
         """Return the persisted project concurrency and any frozen Run value."""
 
         with self.lock:
-            run = self.state.get("run") or {}
-            return {
-                "max_concurrency": int(self.state.get("config", {}).get("max_concurrency") or 3),
-                "run_max_concurrency": (
-                    int(run["max_concurrency"])
-                    if run.get("running") and run.get("max_concurrency") is not None
-                    else None
-                ),
-                "running": bool(run.get("running")),
-                "min_concurrency": 1,
-            }
+            return project_settings.concurrency_settings(self.state)
 
     def update_concurrency_settings(self, max_concurrency: Any) -> dict[str, Any]:
         """Persist a scheduler size only while the project is idle.
@@ -501,14 +464,7 @@ class PipelineManager:
         a pool created with an older value.
         """
 
-        if isinstance(max_concurrency, bool):
-            raise ValueError("并发数必须是大于或等于 1 的整数。")
-        try:
-            value = int(max_concurrency)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("并发数必须是大于或等于 1 的整数。") from exc
-        if value != max_concurrency or value < 1:
-            raise ValueError("并发数必须是大于或等于 1 的整数。")
+        value = project_settings.resolve_concurrency(max_concurrency)
 
         with self.lock:
             self._ensure_open_locked()
@@ -527,20 +483,7 @@ class PipelineManager:
         """Return the request-local source-context settings for this project."""
 
         with self.lock:
-            config = self.state.get("config", {})
-            target_words = project_settings.configured_target_words(config)
-            default_words = default_context_words(target_words)
-            previous_words, next_words = unit_requests.configured_context_words_for_state(self.state)
-            return {
-                "previous_context_words": previous_words,
-                "next_context_words": next_words,
-                "default_previous_context_words": default_words,
-                "default_next_context_words": default_words,
-                "max_context_words": MAX_CONTEXT_WORDS,
-                "sentence_boundary_priority": True,
-                "target_segment_words": target_words,
-                "project_name": self.state.get("project", {}).get("name"),
-            }
+            return project_settings.translation_context_settings(self.state)
 
     def update_translation_context_settings(
         self,
@@ -550,35 +493,9 @@ class PipelineManager:
         """Persist explicit context budgets without changing Units or translations."""
 
         with self.lock:
-            self._ensure_open_locked()
-            if isinstance(previous_context_words, dict) and next_context_words is _UNSET:
-                payload = previous_context_words
-                previous_context_words = payload.get("previous_context_words", _UNSET)
-                next_context_words = payload.get("next_context_words", _UNSET)
-            if previous_context_words is _UNSET and next_context_words is _UNSET:
-                raise ValueError("必须提供 previous_context_words 或 next_context_words。")
-
-            config = self.state.setdefault("config", {})
-            current_previous, current_next = unit_requests.configured_context_words_for_state(self.state)
-            previous_value = (
-                current_previous
-                if previous_context_words is _UNSET
-                else validate_context_words(
-                    previous_context_words,
-                    field_name="previous_context_words",
-                )
+            project_settings.update_translation_context_settings(
+                self._project_state, previous_context_words, next_context_words,
             )
-            next_value = (
-                current_next
-                if next_context_words is _UNSET
-                else validate_context_words(
-                    next_context_words,
-                    field_name="next_context_words",
-                )
-            )
-            config["previous_context_words"] = previous_value
-            config["next_context_words"] = next_value
-            self._save_locked()
             return self.translation_context_settings()
 
     def update_segmentation_settings(
@@ -588,51 +505,11 @@ class PipelineManager:
         target_words: Any = _UNSET,
     ) -> dict[str, Any]:
         with self.lock:
-            self._ensure_open_locked()
-            if isinstance(max_words, dict) and target_words is _UNSET:
-                payload = max_words
-                target_words = payload.get(
-                    "target_words",
-                    payload.get("target_segment_words", _UNSET),
-                )
-                max_words = payload.get("max_words", _UNSET)
-            if target_words is _UNSET and max_words is _UNSET:
-                raise ValueError("必须提供 target_words 或 max_words。")
-
-            if target_words is not _UNSET and max_words is not _UNSET:
-                value = validate_target_words(target_words)
-                legacy_value = validate_target_words(max_words)
-                if value != legacy_value:
-                    raise ValueError("target_words 与 max_words 必须一致。")
-            elif target_words is not _UNSET:
-                value = validate_target_words(target_words)
-            else:
-                value = validate_target_words(max_words)
-
-            config = self.state.setdefault("config", {})
-            config["target_segment_words"] = value
-            config.pop("max_segment_words", None)
-            self._save_locked()
+            project_settings.update_segmentation_settings(
+                self._project_state, max_words, target_words=target_words,
+            )
             return self.segmentation_settings()
 
-    def _resolve_segment_words_locked(
-        self,
-        value: Any | None = None,
-        *,
-        target_segment_words: Any | None = None,
-        max_segment_words: Any | None = None,
-    ) -> int:
-        if value is not None:
-            if target_segment_words is not None or max_segment_words is not None:
-                raise ValueError("不能同时使用位置参数和命名切分词数参数。")
-            max_segment_words = value
-        explicit = self._resolve_explicit_target_words(
-            target_segment_words,
-            max_segment_words,
-        )
-        return explicit if explicit is not None else project_settings.configured_target_words(
-            self.state.get("config", {})
-        )
 
     def get_unit(self, unit_id: str) -> dict[str, Any]:
         with self.lock:
@@ -659,7 +536,8 @@ class PipelineManager:
             if self.state.get("run", {}).get("running"):
                 raise ConflictError("当前流水线仍在运行，不能替换项目。")
             self._scheduler.close_executor_locked()
-            segment_words = self._resolve_segment_words_locked(
+            segment_words = project_settings.resolve_segment_words(
+                self.state,
                 target_segment_words=target_segment_words,
                 max_segment_words=max_segment_words,
             )
@@ -701,7 +579,8 @@ class PipelineManager:
             if self.state.get("run", {}).get("running"):
                 raise ConflictError("当前流水线仍在运行，不能替换项目。")
             self._scheduler.close_executor_locked()
-            segment_words = self._resolve_segment_words_locked(
+            segment_words = project_settings.resolve_segment_words(
+                self.state,
                 target_segment_words=target_segment_words,
                 max_segment_words=max_segment_words,
             )
