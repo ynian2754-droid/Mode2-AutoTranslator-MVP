@@ -106,6 +106,46 @@ class PipelineUnitLifecycleTests(unittest.TestCase):
         self.assertEqual(unit["translation_revision"], 2)
         self.assertEqual((len(self.translator.requests), len(self.reviewer.requests)), (1, 2))
 
+    def test_manual_save_failure_keeps_memory_edit_and_prior_review_without_provider_retry(self):
+        previous = self.initial_result()
+        durable = json.loads(self.manager.state_path.read_text(encoding="utf-8"))
+        with patch.object(self.manager.store, "save", side_effect=OSError("manual save failed")):
+            with self.assertRaisesRegex(OSError, "manual save failed"):
+                self.manager.save_translation(self.unit_id, "  人工修订。  ",
+                                              expected_translation_revision=1)
+        edited = self.manager.get_unit(self.unit_id)
+        self.assertEqual((edited["translation"], edited["translation_revision"], edited["status"]),
+                         ("人工修订。", 2, "user_modified"))
+        self.assertEqual(edited["review"], previous["review"])
+        self.assertEqual(edited["user_edited_translation"], "人工修订。")
+        self.assertEqual(self.manager.snapshot()["events"][-1]["type"], "user_translation_saved")
+        self.assertEqual(json.loads(self.manager.state_path.read_text(encoding="utf-8")), durable)
+        self.assertEqual((len(self.translator.requests), len(self.reviewer.requests)), (1, 1))
+
+    def test_decide_edit_queues_new_revision_for_review_and_preserves_manual_field(self):
+        previous = self.initial_result(fail_review=True)
+        with self.assertRaisesRegex(PipelineError, "源文已经变化"):
+            self.manager.decide(self.unit_id, "edit", translation="拒绝的修订。",
+                                expected_source_sha256="stale")
+        self.assertEqual(self.manager.get_unit(self.unit_id), previous)
+        with self.assertRaisesRegex(PipelineError, "修改后的译文不能为空"):
+            self.manager.decide(self.unit_id, "edit", translation="  ")
+        self.assertEqual((len(self.translator.requests), len(self.reviewer.requests)), (1, 1))
+        self.reset_events()
+        queued = self.manager.decide(self.unit_id, " EDIT ", translation="  正式修改。  ",
+                                     expected_source_sha256=previous["source_sha256"])
+        self.assertEqual((queued["status"], queued["translation_revision"], queued["translation"]),
+                         ("waiting_review", 2, "正式修改。"))
+        self.assertEqual(queued["user_edited_translation"], previous["user_edited_translation"])
+        self.assertEqual(queued["user_decision"], "edit")
+        self.assertTrue(self.reviewer.entered.wait(5))
+        self.assertEqual(self.reviewer.requests[-1].translated_text, "正式修改。")
+        self.reviewer.response = review_result
+        reviewed = self.complete()
+        self.assertEqual((reviewed["status"], reviewed["translation_revision"]), ("passed", 2))
+        self.assertEqual(reviewed["review"]["translation_revision"], 2)
+        self.assertEqual((len(self.translator.requests), len(self.reviewer.requests)), (1, 2))
+
     def test_retry_keeps_original_draft_and_feedback_across_failure_then_consumes_success(self):
         original = self.initial_result(fail_review=True)
         self.translator.response = RuntimeError("offline retry failed")

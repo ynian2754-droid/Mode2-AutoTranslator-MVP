@@ -197,3 +197,13 @@
 - _UNSET唯一对象归settings，pipeline直接alias保持身份及公开默认参数；两个旧private resolver定义及临时unit_requests import alias删除。没有增加常驻settings服务、校验分支或fallback。
 - 原4项settings characterization迁前0.044s全过；迁后4settings0.047s、7project0.195s、10unit lifecycle0.194s全过；4文件内存syntax及diff检查通过。只调用明确离线provider，状态位于TemporaryDirectory。
 - 本批冻结供主Agent验收；manual领域接线下一批，最终文档会统一重写为当前架构和交付证据。
+
+
+## 人工译文命令领域迁移
+
+- settings已验收提交9ea0820；质量adoption/commit已验收f7578e8，queries/limits已验收64a1f43。本批仅pipeline/new core.unit_commands、lifecycle补充测试及台账。
+- UnitCommands持cell、ExecutionRuntime、scheduler.start_job_locked窄callable、clock；四原方法203旧行整体迁移（save51、review26、retranslate50、decide76），保完整锁内validation/mutation/save/enqueue，原注释及多行格式保留。
+- pipeline四公开签名与原docstrings保留，直接明确委托；没有bound manager callback、通用service、额外guard/rollback，scheduler仍唯一执行owner。
+- 原逻辑补2缺口后12 lifecycle通过0.225s：manual save失败保持内存edit和旧review、磁盘旧state、无provider retry；decide edit保原user_edited字段，新revision明确入独立review，原PASS结果为passed。既有accepted-risk只能edit/retranslate而不可直接review继续保持。
+- 接线后12lifecycle0.227s、5output0.156s、8execution0.134s通过，共25项；3文件内存syntax和diff检查通过，所有测试TemporaryDirectory/明确离线provider及禁止外联。
+- 本批冻结供主Agent验收；最终import/空桥清理与架构交付说明统一整理在后续最终批，不混入本批。
