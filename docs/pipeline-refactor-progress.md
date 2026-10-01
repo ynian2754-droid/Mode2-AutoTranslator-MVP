@@ -177,3 +177,13 @@
 - A定向8 execution（0.144s）/10 lifecycle（0.216s）通过；独立17 moved/386旧行及100 retained方法受限AST全部同构，constructor只新增Scheduler，原comments/docstrings及八常量身份通过。主 Agent独立完整正文/diff/wiring/AST及144 Python/4 JS、77 Python内存compile/9 JS syntax、runtime SCC=[]、diff检查通过，生产已接受。
 - 最终模块大小pipeline5927行、execution439行、unit_state468行、pipeline_output199行。当前A仅四生产文件与本台账；B质量owner准备另批，未纳入A scope。
 - 生产及台账冻结ready供主 Agent提交，pipeline窗口交回B。剩余输出owner、editorial及项目/人工入口等领域将另批处理，完整架构目标仍未最终验收。
+
+
+## 项目加载、legacy normalization 与状态构建闭包
+
+- 依据当前 git/source 接续：Scheduler 已提交721f3e8；输出owner4892c9c、prepare guards bb37a31、reused checks ec19f74及lookup d340f16为后续已验收边界，旧A11台账之后的完整历史以git为准。
+- 本批仅pipeline/core.project_loading及台账；精确迁移四定义202旧行（load73、interrupted normalization28、manifest61、new state40）。ProjectLoader持cell、ProjectFactory、SourceImporter、MarkdownSegmenter、runtime_dir及普通clock，不引用scheduler/manager或manager callback。
+- ctor沿用原无新增锁加载；cell.state替换→provider migration event→manifest→interrupted prepare→unit stats→save原顺序保留。新状态反馈字段归一化及ValueError转PipelineError保留；create/import/resegment原锁原子段直接调用new_state，未拆事务。
+- 动态clock为既有_unit_request_clock，在调用时读取pipeline.now_iso；legacy max_segment_words只读不改canonical；manifest仅id/order/hash全绑定匹配回填，不替换unit。
+- 7项目契约离线通过（0.203s）；两生产文件内存syntax与git diff --check通过。重切分成功仍先save再snapshot/stats刷新，磁盘stats={}及返回投影的旧行为保留。
+- 本批冻结供主Agent完整AST/全套离线验收后提交；当前架构迁移继续进行，尚未宣布最终完成或真实宿主验收。

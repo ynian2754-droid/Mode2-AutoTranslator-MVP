@@ -92,6 +92,7 @@ from core.pdf_fonts import PDF_MATH_FONT_PATH, load_pdf_fonts
 from core.pdf_glyph_support import scan_text_glyphs, unavailable_scan
 from core import pipeline_output, project_settings, project_state, provider_routing, unit_requests, unit_state, unit_validation
 from core.project_factory import DEFAULT_SAMPLE_SOURCE, ProjectFactory, empty_output_state
+from core.project_loading import ProjectLoader
 from core.segmenter import DEFAULT_TARGET_WORDS, MarkdownSegmenter, validate_target_words
 from core.storage import ProjectStore
 from core.translation_context import (
@@ -283,8 +284,12 @@ class PipelineManager:
             self._project_state, self.assembler, self.runtime_dir,
             _unit_request_clock, _output_export_resources,
         )
+        self._project_loader = ProjectLoader(
+            self._project_state, self.project_factory, self.source_importer,
+            self.segmenter, self.runtime_dir, _unit_request_clock,
+        )
         self._closed = False
-        self.state = self._load_state()
+        self.state = self._project_loader.load()
 
     @property
     def state(self) -> dict[str, Any]:
@@ -403,211 +408,9 @@ class PipelineManager:
     #: describes *that attempt*; it is never the review of a saved draft.
     _TECHNICAL_REVIEW_PROVIDER = "controller"
 
-    def _load_state(self) -> dict[str, Any]:
-        state = self.store.load()
-        if isinstance(state, dict) and state.get("schema_version") == 1:
-            stale = bool(state.get("run", {}).get("running"))
-            state.setdefault("events", [])
-            state.setdefault("config", {})
-            state.setdefault("units", [])
-            state.setdefault("run", {})
-            state.setdefault("project", {})
-            state.setdefault("document", None)
-            state.setdefault("output", empty_output_state())
-            state["project"].setdefault("source_file", None)
-            if not isinstance(state["run"].get("unit_ids"), list):
-                state["run"]["unit_ids"] = []
-            state["run"].setdefault("unit_ids", [])
-            if not isinstance(state["run"].get("completed_unit_ids"), list):
-                state["run"]["completed_unit_ids"] = []
-            state["run"].setdefault("completed_unit_ids", [])
-            state["run"].setdefault("max_concurrency", None)
-            state["run"].setdefault("cancel_requested", False)
-            state["run"].setdefault("stop_requested_at", None)
-            state["run"].setdefault("cancelled_at", None)
-            state["run"].setdefault("stop_timeout_at", None)
-            previous_provider = state["config"].get("provider")
-            previous_review_provider = state["config"].get("review_provider")
-            provider_migrated = (
-                previous_provider != "openai-compatible"
-                or previous_review_provider != "openai-compatible"
-            )
-            state["config"]["provider"] = "openai-compatible"
-            state["config"]["review_provider"] = "openai-compatible"
-            # Keep legacy projects read-compatible without adding or rewriting
-            # the canonical field during load.
-            project_settings.configured_target_words(state["config"])
-            for unit in state["units"]:
-                was_translating = unit.get("status") in TRANSLATION_PROCESSING_STATUSES
-                unit_state.ensure_unit_feedback_fields(unit)
-                if was_translating and unit["translation_revision"] > 0:
-                    # A translating unit has not committed a new translation yet.
-                    # Roll back its queued revision so persisted feedback remains
-                    # attached to the next translation attempt after a restart.
-                    unit["translation_revision"] -= 1
-                if unit.get("status") in PROCESSING_STATUSES:
-                    unit["status"] = "pending"
-                    unit["last_error"] = "应用重启后已回到待处理队列。"
-            state["run"]["running"] = False
-            if stale:
-                state["run"]["status"] = "ready"
-                state["run"]["cancel_requested"] = False
-                state["run"]["stop_requested_at"] = None
-            elif state["run"].get("status") == "stopping":
-                # A previous process may have persisted the transient state
-                # after its worker had already disappeared.  Do not resurrect
-                # that impossible state on the next page load.
-                state["run"]["status"] = "cancelled" if state["run"].get("cancel_requested") else "ready"
-                state["run"]["completed_at"] = state["run"].get("completed_at") or now_iso()
-            self.state = state
-            if provider_migrated:
-                self._event_locked(
-                    "provider_migrated",
-                    "旧 Provider 配置已迁移为 OpenAI Compatible。",
-                    previous_provider=previous_provider,
-                    previous_review_provider=previous_review_provider,
-                )
-            self._ensure_document_manifest_locked()
-            self._normalize_interrupted_prepare_locked(state)
-            unit_state.recompute_unit_stats(self.state)
-            self._save_locked()
-            return state
-        state = self._new_state(DEFAULT_SAMPLE_SOURCE, demo_mode=True, max_concurrency=3, provider="demo")
-        self.state = state
-        self._save_locked()
-        return state
 
-    def _normalize_interrupted_prepare_locked(self, state: dict[str, Any]) -> bool:
-        """A restarted process cannot still be running a preparation.
 
-        A persisted ``running`` prepare record is a crash image: nothing
-        continues it in the background (there is no runner), so on load it must
-        read as ``interrupted`` — otherwise it would block every new
-        preparation forever — and the normalized state is written back so the
-        recovery is visible on disk, not only in this process's memory.
-        """
 
-        support = state.get("quality_support")
-        if not isinstance(support, dict):
-            return False
-        automation = support.get("automation")
-        if not isinstance(automation, dict):
-            return False
-        record = automation.get("prepare")
-        if not isinstance(record, dict) or str(record.get("status") or "") != "running":
-            return False
-        record["status"] = "interrupted"
-        record["committed"] = False
-        record["finished_at"] = str(record.get("finished_at") or "") or now_iso()
-        errors = record.get("errors") if isinstance(record.get("errors"), list) else []
-        note = "应用重启，准备任务已中断；未完成的部分可以重新准备，已提交的参考不受影响。"
-        if note not in errors:
-            errors.append(note)
-        record["errors"] = errors
-        return True
-
-    def _ensure_document_manifest_locked(self) -> None:
-        """Backfill manifests only when the stored source proves the unit mapping."""
-        document = self.state.get("document")
-        if isinstance(document, dict) and isinstance(document.get("parts"), list) and document.get("parts"):
-            return
-        units = self.state.get("units") or []
-        if not units:
-            self.state["document"] = empty_document(
-                source_sha256=self.state.get("project", {}).get("source_sha256", ""),
-            )
-            return
-        source_file = self.state.get("project", {}).get("source_file") or {}
-        stored_path = str(source_file.get("stored_path") or "")
-        if not stored_path:
-            return
-        runtime_root = self.runtime_dir.resolve()
-        source_path = (runtime_root / Path(stored_path)).resolve()
-        if runtime_root not in source_path.parents or not source_path.is_file():
-            return
-        try:
-            imported = self.source_importer.import_bytes(source_file.get("name") or source_path.name, source_path.read_bytes())
-        except (OSError, ValueError):
-            return
-        segmentation_options: list[dict[str, Any]] = [{}]
-        if imported.format == "epub" and imported.structure_blocks:
-            segmentation_options.append({"structure_blocks": imported.structure_blocks})
-        elif imported.format in {"text", "markdown"}:
-            segmentation_options.append({"group_adjacent_paragraphs": True})
-        try:
-            existing_binding = [
-                (str(unit.get("id") or ""), int(unit.get("order") or 0), str(unit.get("source_sha256") or ""))
-                for unit in units
-            ]
-        except (AttributeError, TypeError, ValueError):
-            return
-        for option_index, options in enumerate(segmentation_options):
-            try:
-                generated_units, generated_document = self.segmenter.segment_document(
-                    imported.text,
-                    demo_mode=bool(self.state.get("project", {}).get("demo_mode")),
-                    max_words=project_settings.configured_target_words(self.state.get("config", {})),
-                    document_format=imported.format,
-                    source_name=imported.original_name,
-                    **options,
-                )
-            except (OSError, ValueError):
-                if option_index == 0:
-                    return
-                continue
-            try:
-                generated_binding = [
-                    (str(unit.get("id") or ""), int(unit.get("order") or 0), str(unit.get("source_sha256") or ""))
-                    for unit in generated_units
-                ]
-            except (AttributeError, TypeError, ValueError):
-                continue
-            if existing_binding == generated_binding:
-                # This fills the document-to-existing-unit manifest only.  It
-                # never replaces or reorders the persisted units themselves.
-                self.state["document"] = generated_document
-                return
-
-    def _new_state(
-        self,
-        source_text: str,
-        *,
-        demo_mode: bool,
-        max_concurrency: int,
-        provider: str,
-        source_language: str = "English",
-        target_language: str = "简体中文",
-        source_file: dict[str, Any] | None = None,
-        pdf_reconstruction: Any | None = None,
-        structure_blocks: tuple[dict[str, Any], ...] | list[dict[str, Any]] | None = None,
-        group_adjacent_paragraphs: bool = False,
-        target_segment_words: int | None = None,
-        max_segment_words: int | None = None,
-    ) -> dict[str, Any]:
-        try:
-            state = self.project_factory.create_state(
-                source_text,
-                demo_mode=demo_mode,
-                max_concurrency=max_concurrency,
-                provider=provider,
-                source_language=source_language,
-                target_language=target_language,
-                source_file=source_file,
-                pdf_reconstruction=pdf_reconstruction,
-                structure_blocks=structure_blocks,
-                group_adjacent_paragraphs=group_adjacent_paragraphs,
-                target_segment_words=target_segment_words,
-                max_segment_words=max_segment_words,
-            )
-            # Segmenters are shared with legacy callers.  Normalize the
-            # persisted Unit contract here so every newly-created project has
-            # the manual-edit field without changing the segmenter API.
-            for unit in state.get("units") or []:
-                if isinstance(unit, dict):
-                    unit_state.ensure_unit_feedback_fields(unit)
-            return state
-        except ValueError as exc:
-            raise PipelineError(str(exc)) from exc
 
     def _save_locked(self) -> None:
         project_state.save_project(self._project_state)
@@ -856,7 +659,7 @@ class PipelineManager:
                 target_segment_words=target_segment_words,
                 max_segment_words=max_segment_words,
             )
-            self.state = self._new_state(
+            self.state = self._project_loader.new_state(
                 source_text if source_text is not None else DEFAULT_SAMPLE_SOURCE,
                 demo_mode=demo_mode,
                 max_concurrency=int(max_concurrency),
@@ -898,7 +701,7 @@ class PipelineManager:
                 target_segment_words=target_segment_words,
                 max_segment_words=max_segment_words,
             )
-            new_state = self._new_state(
+            new_state = self._project_loader.new_state(
                 imported.text,
                 demo_mode=demo_mode,
                 max_concurrency=int(max_concurrency),
@@ -975,7 +778,7 @@ class PipelineManager:
             try:
                 source_metadata = imported.metadata()
                 source_metadata["stored_path"] = stored_path
-                replacement = self._new_state(
+                replacement = self._project_loader.new_state(
                     imported.text,
                     demo_mode=bool(project.get("demo_mode")),
                     max_concurrency=int(config.get("max_concurrency") or 3),
